@@ -74,10 +74,13 @@
 <script type="text/javascript">
 setTimeout(function () {
     var STATES = ["empty", "recording", "overdub", "playback", "stopped"];
-    // Mirrors the plugin's surface_state advance table (loopjefe.cpp,
-    // switch (plugin->surface_state) in run()): Stopped loops back to
-    // Overdub, not Empty -- Empty is only reachable via the reset port.
-    var NEXT_STATE = { 0: 1, 1: 2, 2: 3, 3: 4, 4: 2 };
+    // Mirrors the plugin's surface_state advance table (src/shared.h,
+    // switch (plugin->surface_state) in run()): 4-state cycle, Overdub
+    // is skipped. Empty is only reachable via the reset port. The
+    // Overdub index (2) is still in STATES for the safety-net case in
+    // the engine (where anything ever lands on SURFACE_OVERDUB, the
+    // next tap takes the user back to Playback).
+    var NEXT_STATE = { 0: 1, 1: 3, 3: 4, 4: 3 };
 
     $(".lj-hub").each(function () {
         var hub = $(this);

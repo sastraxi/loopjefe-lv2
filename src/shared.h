@@ -996,8 +996,11 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                         break;
                     }
                     // Finalize the initial take (bar-round its length --
-                    // identical to the old record-falling-edge branch), then
-                    // immediately begin overdubbing the same loop.
+                    // identical to the old record-falling-edge branch) and
+                    // land in PLAYBACK. Overdub is engine-supported but not
+                    // exposed on the surface cycle (one-footswitch UX can't
+                    // distinguish "exit overdub" from "start a second overdub"
+                    // -- see CLAUDE.md).
                     if (loop && pLS->state == STATE_RECORD
                             && plugin->transport_valid
                             && plugin->transport_bpm > 0.0
@@ -1014,13 +1017,16 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                         loop->lCycleLength = new_length;
                         loop->pLoopStop = loop->pLoopStart + new_length;
                     }
-                    if (loop) {
-                        beginOverdub(pLS, loop);
-                    }
-                    plugin->surface_state = SURFACE_OVERDUB;
+                    plugin->surface_state = SURFACE_PLAYBACK;
                     break;
 
                 case SURFACE_OVERDUB:
+                    // Safety net only. The state-port cycle never routes a
+                    // tap here, but the constant and the engine's STATE_OVERDUB
+                    // are kept for the day a second footswitch (or a CC)
+                    // reintroduces overdub on the surface. If we ever do land
+                    // here, the next tap takes the user back to playback so
+                    // the cycle stays well-defined.
                     plugin->pLS->state = STATE_PLAY;
                     plugin->surface_state = SURFACE_PLAYBACK;
                     break;
@@ -1033,11 +1039,9 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                     break;
 
                 case SURFACE_STOPPED:
-                    // Resume playing and re-enter overdub on the same content.
-                    if (loop) {
-                        beginOverdub(pLS, loop);
-                    }
-                    plugin->surface_state = SURFACE_OVERDUB;
+                    // Resume playing the same loop, no new layer.
+                    plugin->pLS->state = STATE_PLAY;
+                    plugin->surface_state = SURFACE_PLAYBACK;
                     break;
             }
         }

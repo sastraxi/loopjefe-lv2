@@ -45,11 +45,15 @@ scheduled for removal.
 
 The old `play_pause`/`record` control-port pair is gone. A single
 `state` port (`lv2:integer`, `lv2:enumeration`, 5 scalePoints: Empty=0,
-Recording=1, Overdub=2, Playback=3, Stopped=4) drives the whole cycle —
-any value written to it that differs from the value the plugin itself
-last wrote is treated as an external trigger (a MIDI-learned CC,
-mod-ui REST/WS, anything), advancing the surface state by exactly one
-step: Empty → Recording → Overdub → Playback → Stopped → Overdub. The
+Recording=1, Overdub=2, Playback=3, Stopped=4) drives a 4-state
+single-CC cycle: **Empty → Recording → Playback ⇄ Stopped**. The
+Overdub scalePoint is still in the TTL (and the `SURFACE_OVERDUB`
+constant and `STATE_OVERDUB` engine path remain in `shared.h`) for the
+day a second footswitch or CC reintroduces overdub on the surface —
+see "Overdub is engine-only" below. Any value written to the state
+port that differs from the value the plugin itself last wrote is
+treated as an external trigger (a MIDI-learned CC, mod-ui REST/WS,
+anything), advancing the surface state by exactly one step. The
 plugin always writes its current surface state back into the port
 every block, so mod-host's `param_set` echo keeps any bound footswitch
 LED/UI in sync. `reset` (separate `lv2:integer` port, edge-triggered,
@@ -83,16 +87,33 @@ take / push it back), independently of `reset`. `reset` is the "abort
 what I was doing to the current loop" pedal; `undo` is the "I want
 the previous take back" pedal.
 
-The 5-state wrapper is implemented in terms of the *same* internal
-transitions the old two-port design used (`plugin->playing`,
-`plugin->recording`, `plugin->started`, `beginOverdub()`, the
-bar-rounding snippet on finalize) — see the `switch
-(plugin->surface_state)` block in `run()`. "Empty" and "Stopped" are
-externally distinct (different LED colors) but both map to the
-engine's internal `STATE_OFF`; the wrapper's `surface_state` member is
-what actually distinguishes them since `STATE_OFF` alone doesn't carry
-that information. Full design rationale is in pi-Stomp's
-`docs/multitrack-looper-plan.md`.
+### Overdub is engine-only
+
+Overdub (`STATE_OVERDUB` / `beginOverdub()` / the per-sample
+`STATE_OVERDUB` branch in the audio loop) is **fully implemented**
+and unchanged in `src/shared.h`. What's gone is the surface path to
+it: no state-port tap can ever land the user in `SURFACE_OVERDUB`.
+The `case SURFACE_OVERDUB:` arm in the state-port switch is kept as
+a safety net — if anything ever does land there (legacy save state,
+future re-introduction, external CC writing the value directly) the
+next tap takes the user back to `SURFACE_PLAYBACK` so the cycle
+stays well-defined.
+
+Why: a one-footswitch UX can't distinguish "exit the current overdub"
+from "start a second overdub" — both gestures are the same tap, and
+both should land in `PLAYBACK` (where the previous layer keeps
+playing). The mode-parameter design we considered is documented in
+git history for the day a second footswitch (or a dedicated CC)
+makes the distinction possible without ambiguity.
+
+The 4-state wrapper is implemented in terms of the *same* internal
+transitions the old two-port design used (the bar-rounding snippet
+on finalize) — see the `switch (plugin->surface_state)` block in
+`run()`. "Empty" and "Stopped" are externally distinct (different
+LED colors) but both map to the engine's internal `STATE_OFF`; the
+wrapper's `surface_state` member is what actually distinguishes them
+since `STATE_OFF` alone doesn't carry that information. Full design
+rationale is in pi-Stomp's `docs/multitrack-looper-plan.md`.
 
 The actual "stop recording" event (bar-rounding the initial take's
 length) fires inside the `SURFACE_RECORDING` case of the `state`-port

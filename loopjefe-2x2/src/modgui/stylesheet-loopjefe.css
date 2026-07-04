@@ -123,7 +123,7 @@
 .mod-loopjefe{{{cns}}} .lj-hub[data-state="recording"] .lj-glyph-check { display: block; }
 .mod-loopjefe{{{cns}}} .lj-hub[data-state="overdub"]   .lj-glyph-play  { display: block; }
 .mod-loopjefe{{{cns}}} .lj-hub[data-state="playback"]  .lj-glyph-stop  { display: block; }
-.mod-loopjefe{{{cns}}} .lj-hub[data-state="stopped"]   .lj-glyph-both  { display: block; }
+.mod-loopjefe{{{cns}}} .lj-hub[data-state="stopped"]   .lj-glyph-play  { display: block; }
 
 .mod-loopjefe{{{cns}}} .lj-state-label {
     color: #f2efe4;

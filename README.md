@@ -18,13 +18,13 @@ land on the same downbeat. See pi-Stomp's
 Currently supports:
 
  * mono and stereo in/out
- * record/overdub, quantized to the bar grid when the transport is rolling
-   (falls back to free-running/unquantized recording otherwise)
+ * record, quantized to the bar grid when the transport is rolling (falls
+   back to free-running/unquantized recording otherwise)
  * play/pause
  * undo
  * redo
 
 Out of scope (unchanged from upstream's stripped-down feature set): reverse,
-one-shot, multiply, insert, replace, and the full RC-505-style configurable
-Loop Sync / Measure / Quantize / Tempo Sync mode matrix. This is a
-single, hardcoded behavior, not a general-purpose looper emulator.
+one-shot, multiply, insert, replace, overdub, and the full RC-505-style
+configurable Loop Sync / Measure / Quantize / Tempo Sync mode matrix. This
+is a single, hardcoded behavior, not a general-purpose looper emulator.
