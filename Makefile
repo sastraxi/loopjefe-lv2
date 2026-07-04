@@ -1,13 +1,13 @@
 DEST_DIR=/usr/lib/lv2
 
 all:
-	$(MAKE) -C sooperlooper
-	$(MAKE) -C sooperlooper-2x2
+	$(MAKE) -C loopjefe
+	$(MAKE) -C loopjefe-2x2
 
 install:
-	$(MAKE) install -C sooperlooper
-	$(MAKE) install -C sooperlooper-2x2
+	$(MAKE) install -C loopjefe
+	$(MAKE) install -C loopjefe-2x2
 
 clean:
-	$(MAKE) clean -C sooperlooper
-	$(MAKE) clean -C sooperlooper-2x2
+	$(MAKE) clean -C loopjefe
+	$(MAKE) clean -C loopjefe-2x2
