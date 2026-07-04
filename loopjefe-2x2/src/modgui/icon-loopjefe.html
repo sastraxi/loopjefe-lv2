@@ -1,0 +1,106 @@
+<div class="mod-pedal mod-loopjefe{{{cns}}}">
+    <div mod-role="drag-handle" class="lj-drag-handle"></div>
+
+    <div class="lj-topbar">
+        <div class="lj-title">Loop Jefe</div>
+        <div class="mod-footswitch lj-bypass" mod-role="bypass"></div>
+        <div class="mod-light on lj-bypass-light" mod-role="bypass-light"></div>
+    </div>
+
+    <div class="lj-hub-wrap">
+        <div class="lj-hub" mod-role="input-control-port" mod-widget="custom-select" mod-port-symbol="state">
+            <svg class="lj-hub-svg" viewBox="0 0 150 150" width="150" height="150">
+                <circle class="lj-ring-bg" cx="75" cy="75" r="65"/>
+                <circle class="lj-ring-fg" cx="75" cy="75" r="65"/>
+                <circle class="lj-hub-center" cx="75" cy="75" r="48"/>
+                <g class="lj-glyph lj-glyph-rec"><circle cx="75" cy="75" r="16"/></g>
+                <g class="lj-glyph lj-glyph-play"><polygon points="60,55 60,95 96,75"/></g>
+                <g class="lj-glyph lj-glyph-stop"><rect x="60" y="60" width="30" height="30"/></g>
+                <g class="lj-glyph lj-glyph-both">
+                    <polygon points="45,55 45,95 75,75"/>
+                    <circle cx="98" cy="75" r="11"/>
+                </g>
+                <g class="lj-glyph lj-glyph-check">
+                    <polyline points="52,77 68,93 100,57" fill="none" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+                </g>
+            </svg>
+            <div mod-role="input-control-value" mod-port-symbol="state" class="lj-state-label"></div>
+            <div class="lj-enumerated-list">
+                {{#controls.0}}
+                {{#scalePoints}}
+                <div mod-role="enumeration-option" mod-port-value="{{value}}">{{label}}</div>
+                {{/scalePoints}}
+                {{/controls.0}}
+            </div>
+        </div>
+    </div>
+
+    <div class="lj-controls-row">
+        <div class="lj-btn-col">
+            <div class="lj-sq-btn lj-undo" mod-role="input-control-port" mod-widget="switch" mod-port-symbol="undo" title="Undo">
+                <svg viewBox="0 0 200 180"><path class="lj-arrow-line" d="M160.1,126.9 A64.0,64.0 0 1 1 78.1,44.9" fill="none" stroke-width="18" stroke-linecap="round"/><polygon class="lj-arrow" points="138.3,23.0 90.4,78.7 65.8,11.0"/></svg>
+            </div>
+            <div class="lj-btn-label">Undo</div>
+        </div>
+        <div class="lj-btn-col">
+            <div class="lj-sq-btn lj-reset" mod-role="input-control-port" mod-widget="switch" mod-port-symbol="reset" title="Reset">
+                <svg viewBox="0 0 40 40"><rect class="lj-reset-mark" x="12" y="12" width="16" height="16"/></svg>
+            </div>
+            <div class="lj-btn-label">Reset</div>
+        </div>
+        <div class="lj-btn-col">
+            <div class="lj-sq-btn lj-redo" mod-role="input-control-port" mod-widget="switch" mod-port-symbol="redo" title="Redo">
+                <svg viewBox="0 0 200 180"><path class="lj-arrow-line" d="M39.9,126.9 A64.0,64.0 0 1 0 121.9,44.9" fill="none" stroke-width="18" stroke-linecap="round"/><polygon class="lj-arrow" points="61.7,23.0 134.2,11.0 109.6,78.7"/></svg>
+            </div>
+            <div class="lj-btn-label">Redo</div>
+        </div>
+    </div>
+
+    <div class="mod-pedal-input">
+        {{#effect.ports.audio.input}}
+        <div class="mod-input mod-input-disconnected" title="{{name}}" mod-role="input-audio-port" mod-port-symbol="{{symbol}}">
+            <div class="mod-pedal-input-image"></div>
+        </div>
+        {{/effect.ports.audio.input}}
+    </div>
+    <div class="mod-pedal-output">
+        {{#effect.ports.audio.output}}
+        <div class="mod-output mod-output-disconnected" title="{{name}}" mod-role="output-audio-port" mod-port-symbol="{{symbol}}">
+            <div class="mod-pedal-output-image"></div>
+        </div>
+        {{/effect.ports.audio.output}}
+    </div>
+</div>
+<script type="text/javascript">
+setTimeout(function () {
+    var STATES = ["empty", "recording", "overdub", "playback", "stopped"];
+
+    $(".lj-hub").each(function () {
+        var hub = $(this);
+
+        function applyState(value) {
+            var idx = Math.round(parseFloat(value));
+            hub.attr("data-state", STATES[idx] || "empty");
+        }
+
+        var valueField = hub.find("[mod-role=input-control-value]");
+        var current = valueField.data("value");
+        if (current !== undefined) {
+            applyState(current);
+        }
+
+        hub.on("valuechange", function (e, value) {
+            applyState(value);
+        });
+
+        hub.on("click", function () {
+            var options = hub.find("[mod-role=enumeration-option]");
+            var selected = hub.find("[mod-role=enumeration-option].selected");
+            var idx = options.index(selected);
+            var nextIdx = (idx + 1) % options.length;
+            var nextValue = options.eq(nextIdx).attr("mod-port-value");
+            hub.customSelect("setValue", nextValue, false);
+        });
+    });
+}, 0);
+</script>

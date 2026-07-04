@@ -4,4 +4,4 @@
 <http://treefallsound.com/plugins/loopjefe-2x2>
   a lv2:Plugin;
   lv2:binary <loopjefe-2x2.so>;
-  rdfs:seeAlso <loopjefe.ttl>.
+  rdfs:seeAlso <loopjefe.ttl>, <modgui.ttl>.

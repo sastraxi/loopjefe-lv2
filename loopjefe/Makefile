@@ -41,3 +41,5 @@ install: $(PLUGIN_SO)
 	install -m 644 $(PLUGIN_SO) $(DESTDIR)$(PREFIX)/lib/lv2/$(PLUGIN).lv2/
 	install -m 644 src/manifest.ttl $(DESTDIR)$(PREFIX)/lib/lv2/$(PLUGIN).lv2/
 	install -m 644 src/loopjefe.ttl $(DESTDIR)$(PREFIX)/lib/lv2/$(PLUGIN).lv2/
+	install -m 644 src/modgui.ttl $(DESTDIR)$(PREFIX)/lib/lv2/$(PLUGIN).lv2/
+	cp -r src/modgui $(DESTDIR)$(PREFIX)/lib/lv2/$(PLUGIN).lv2/

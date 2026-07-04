@@ -1,0 +1,198 @@
+.mod-loopjefe{{{cns}}} {
+    background: linear-gradient(
+        to bottom,
+        #2a2a2a 0%,
+        #1f1f1f 60%,
+        #161616 88%
+    );
+    border: 2px solid #050505;
+    border-radius: 14px;
+    box-shadow:
+        inset 0 0 0 1px #333,
+        inset 0 1px 0 rgba(255, 255, 255, 0.06),
+        inset 0 -12px 0 #000;
+    color: #eee;
+    font-family: "Courier New", ui-monospace, monospace;
+    height: 340px;
+    position: relative;
+    width: 210px;
+}
+
+.mod-loopjefe{{{cns}}} .lj-drag-handle {
+    bottom: 0;
+    left: 0;
+    position: absolute;
+    right: 0;
+    top: 0;
+}
+
+.mod-loopjefe{{{cns}}} .lj-topbar {
+    height: 40px;
+    padding: 10px 14px 0;
+    pointer-events: none;
+    position: relative;
+}
+
+.mod-loopjefe{{{cns}}} .lj-title {
+    color: #f2efe4;
+    font-size: 13px;
+    font-weight: bold;
+    letter-spacing: 3px;
+    text-align: center;
+    text-transform: uppercase;
+}
+
+.mod-loopjefe{{{cns}}} .lj-bypass {
+    background: #000;
+    border: 2px solid #f2efe4;
+    border-radius: 3px;
+    cursor: pointer;
+    height: 16px;
+    pointer-events: auto;
+    position: absolute;
+    right: 14px;
+    top: 8px;
+    width: 16px;
+    z-index: 2000000;
+}
+
+.mod-loopjefe{{{cns}}} .lj-bypass-light {
+    background: #6b6b6b;
+    border-radius: 50%;
+    height: 8px;
+    position: absolute;
+    right: 18px;
+    top: 30px;
+    width: 8px;
+}
+
+.mod-loopjefe{{{cns}}} .lj-bypass-light.on {
+    background: #3f9142;
+}
+
+.mod-loopjefe{{{cns}}} .lj-hub-wrap {
+    pointer-events: none;
+    position: relative;
+    text-align: center;
+}
+
+.mod-loopjefe{{{cns}}} .lj-hub {
+    cursor: pointer;
+    display: inline-block;
+    pointer-events: auto;
+    position: relative;
+    z-index: 2000000;
+}
+
+.mod-loopjefe{{{cns}}} .lj-ring-bg {
+    fill: none;
+    stroke: #3a3a3a;
+    stroke-width: 10;
+}
+
+.mod-loopjefe{{{cns}}} .lj-ring-fg {
+    fill: none;
+    stroke: transparent;
+    stroke-width: 10;
+}
+
+.mod-loopjefe{{{cns}}} .lj-hub[data-state="recording"] .lj-ring-fg { stroke: #d1361c; }
+.mod-loopjefe{{{cns}}} .lj-hub[data-state="overdub"]   .lj-ring-fg { stroke: #e8891a; }
+.mod-loopjefe{{{cns}}} .lj-hub[data-state="playback"]  .lj-ring-fg { stroke: #3f9142; }
+.mod-loopjefe{{{cns}}} .lj-hub[data-state="stopped"]   .lj-ring-fg { stroke: #ece8da; }
+
+.mod-loopjefe{{{cns}}} .lj-hub-center {
+    fill: #2a2a2a;
+    stroke: #050505;
+    stroke-width: 2;
+}
+
+.mod-loopjefe{{{cns}}} .lj-glyph {
+    display: none;
+}
+.mod-loopjefe{{{cns}}} .lj-glyph polygon,
+.mod-loopjefe{{{cns}}} .lj-glyph circle,
+.mod-loopjefe{{{cns}}} .lj-glyph rect {
+    fill: #f2efe4;
+}
+.mod-loopjefe{{{cns}}} .lj-glyph polyline {
+    stroke: #f2efe4;
+}
+
+.mod-loopjefe{{{cns}}} .lj-hub[data-state="empty"]     .lj-glyph-rec   { display: block; }
+.mod-loopjefe{{{cns}}} .lj-hub[data-state="recording"] .lj-glyph-check { display: block; }
+.mod-loopjefe{{{cns}}} .lj-hub[data-state="overdub"]   .lj-glyph-play  { display: block; }
+.mod-loopjefe{{{cns}}} .lj-hub[data-state="playback"]  .lj-glyph-stop  { display: block; }
+.mod-loopjefe{{{cns}}} .lj-hub[data-state="stopped"]   .lj-glyph-both  { display: block; }
+
+.mod-loopjefe{{{cns}}} .lj-state-label {
+    color: #f2efe4;
+    font-size: 12px;
+    font-weight: bold;
+    letter-spacing: 2px;
+    margin-top: 4px;
+    text-align: center;
+    text-transform: uppercase;
+}
+
+.mod-loopjefe{{{cns}}} .lj-enumerated-list {
+    display: none;
+}
+
+.mod-loopjefe{{{cns}}} .lj-controls-row {
+    bottom: 20px;
+    display: flex;
+    justify-content: center;
+    gap: 16px;
+    left: 0;
+    pointer-events: none;
+    position: absolute;
+    right: 0;
+}
+
+.mod-loopjefe{{{cns}}} .lj-btn-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.mod-loopjefe{{{cns}}} .lj-sq-btn {
+    background: #000;
+    border: 2px solid #f2efe4;
+    border-radius: 4px;
+    cursor: pointer;
+    height: 34px;
+    pointer-events: auto;
+    width: 34px;
+    z-index: 2000000;
+}
+
+.mod-loopjefe{{{cns}}} .lj-sq-btn svg {
+    height: 100%;
+    width: 100%;
+}
+
+.mod-loopjefe{{{cns}}} .lj-arrow,
+.mod-loopjefe{{{cns}}} .lj-reset-mark {
+    fill: #f2efe4;
+}
+.mod-loopjefe{{{cns}}} .lj-arrow-line {
+    stroke: #f2efe4;
+}
+
+.mod-loopjefe{{{cns}}} .lj-btn-label {
+    color: #f2efe4;
+    font-size: 9px;
+    font-weight: bold;
+    letter-spacing: 1px;
+    margin-top: 4px;
+    text-transform: uppercase;
+}
+
+.mod-loopjefe{{{cns}}} .mod-pedal-input {
+    top: 170px;
+}
+
+.mod-loopjefe{{{cns}}} .mod-pedal-output {
+    top: 170px;
+}
