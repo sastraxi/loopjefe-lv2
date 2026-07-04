@@ -38,6 +38,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <climits>
 #include <lv2/core/lv2.h>
 #include <lv2/atom/atom.h>
 #include <lv2/atom/util.h>

@@ -18,6 +18,8 @@ CXXFLAGS += -I. -I../../src -O3 -Wall -fPIC -DPIC -c -DSAMPLE_MEMORY=$(SAMPLE_ME
 LDFLAGS += -shared -lm
 ifneq ($(MACOS),true)
 LDFLAGS += -Wl,--no-undefined
+else
+CXXFLAGS += $(shell pkg-config --cflags lv2)
 endif
 
 # remove command

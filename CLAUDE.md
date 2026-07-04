@@ -23,14 +23,8 @@ make install    # PREFIX defaults to /usr/local
 Local syntax/compile check (macOS, lv2-dev via homebrew):
 
 ```bash
-g++ -std=c++14 -Wall -I/opt/homebrew/Cellar/lv2/*/include -include climits \
-    -DSAMPLE_MEMORY=200 -fsyntax-only loopjefe/src/loopjefe.cpp
+make MACOS=true
 ```
-
-`-include climits` works around a pre-existing upstream gap: `MAXLONG` is
-`#define`d to `LONG_MAX` on `__APPLE__`/`_WIN32` but nothing includes
-`<climits>` for it. Harmless on the Linux arm64 target (`<values.h>`
-provides it directly) — not worth fixing.
 
 ## Reachable state machine
 
