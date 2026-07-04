@@ -74,6 +74,10 @@
 <script type="text/javascript">
 setTimeout(function () {
     var STATES = ["empty", "recording", "overdub", "playback", "stopped"];
+    // Mirrors the plugin's surface_state advance table (loopjefe.cpp,
+    // switch (plugin->surface_state) in run()): Stopped loops back to
+    // Overdub, not Empty -- Empty is only reachable via the reset port.
+    var NEXT_STATE = { 0: 1, 1: 2, 2: 3, 3: 4, 4: 2 };
 
     $(".lj-hub").each(function () {
         var hub = $(this);
@@ -97,7 +101,10 @@ setTimeout(function () {
             var options = hub.find("[mod-role=enumeration-option]");
             var selected = hub.find("[mod-role=enumeration-option].selected");
             var idx = options.index(selected);
-            var nextIdx = (idx + 1) % options.length;
+            var nextIdx = NEXT_STATE[idx];
+            if (nextIdx === undefined) {
+                return;
+            }
             var nextValue = options.eq(nextIdx).attr("mod-port-value");
             hub.customSelect("setValue", nextValue, false);
         });

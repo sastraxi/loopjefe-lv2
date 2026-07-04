@@ -331,9 +331,6 @@ public:
     const LV2_Atom_Sequence *time_info;
     SooperLooper *pLS;
     float dryVolumeCoef;
-    int playing;
-    int started;
-    int recording;
     int params_state[PLUGIN_CONTROL_PORT_COUNT];
     bool undoSet;
     bool redoSet;
@@ -899,15 +896,47 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
     // reset: momentary trigger (rising edge only). Self-clears the port so a
     // footswitch that latches its CC at a fixed value (rather than bouncing
     // back to 0) doesn't re-fire every block.
+    //
+    // Mode-aware. The key invariant: a committed loop's first sample must
+    // sit on a bar downbeat, otherwise it cannot be quantize-locked to
+    // other tracks. So we never let a "wipe" leave the engine mid-take and
+    // resume recording -- the user can always retry by re-arming.
     if (*(plugin->reset) > 0.0 && !plugin->resetSet) {
         plugin->resetSet = true;
-        clearLoopChunks(pLS);
-        plugin->recording = 0;
-        plugin->playing = 0;
-        plugin->started = 0;
-        plugin->initNewLoop = false;
-        plugin->surface_state = SURFACE_EMPTY;
-        plugin->pLS->state = STATE_OFF;
+        if (plugin->surface_state == SURFACE_RECORDING) {
+            // Recording in progress (or pending in STATE_TRIG_START waiting
+            // for the bar boundary). Abort the take entirely -- drop the
+            // partial buffer, land on EMPTY. EMPTY is the only surface state
+            // with a transition back to RECORDING (EMPTY -> RECORDING), so
+            // a single tap re-arms a fresh take on the next bar boundary.
+            clearLoopChunks(pLS);
+            plugin->initNewLoop = false;
+            plugin->surface_state = SURFACE_EMPTY;
+            plugin->pLS->state = STATE_OFF;
+        }
+        else if (plugin->surface_state == SURFACE_OVERDUB
+                && pLS->headLoopChunk != NULL
+                && pLS->headLoopChunk->srcloop != NULL) {
+            // Overdub in progress: the most-recent chunk is the new layer
+            // being recorded on top of the source loop. Discard just that
+            // layer (undoLoop pops it and hands its dCurrPos to srcloop so
+            // playback continues from the same position -- the *playback
+            // cursor is preserved* as required) and drop back to plain
+            // PLAYBACK. The original loop is untouched, the user can tap
+            // again to start a new overdub layer from the same position.
+            undoLoop(pLS);
+            plugin->surface_state = SURFACE_PLAYBACK;
+            plugin->pLS->state = STATE_PLAY;
+        }
+        else {
+            // Empty / Playback / Stopped (or Overdub with no srcloop, which
+            // shouldn't happen via the wrapper but guard anyway). Full
+            // wipe back to the original "fresh start" state.
+            clearLoopChunks(pLS);
+            plugin->initNewLoop = false;
+            plugin->surface_state = SURFACE_EMPTY;
+            plugin->pLS->state = STATE_OFF;
+        }
         *(plugin->reset) = 0.0f;
     } else if (*(plugin->reset) == 0.0 && plugin->resetSet) {
         plugin->resetSet = false;
@@ -929,18 +958,26 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                     // Arm play+record together -- the same rising-edge
                     // combination the old two ports required (in this
                     // order) to reach STATE_TRIG_START.
-                    plugin->playing = 1;
-                    plugin->recording = 1;
-                    plugin->started = 1;
                     plugin->pLS->state = STATE_TRIG_START;
                     plugin->surface_state = SURFACE_RECORDING;
                     break;
 
                 case SURFACE_RECORDING:
+                    if (pLS->state == STATE_TRIG_START) {
+                        // Tap arrived before the bar boundary ever fired.
+                        // Abort the take -- the new chunk hasn't been pushed
+                        // yet, but the user clearly didn't want to commit to
+                        // an empty recording, and "record" in TRIG_START means
+                        // the engine is still arming on the next downbeat.
+                        clearLoopChunks(pLS);
+                        plugin->initNewLoop = false;
+                        plugin->surface_state = SURFACE_EMPTY;
+                        plugin->pLS->state = STATE_OFF;
+                        break;
+                    }
                     // Finalize the initial take (bar-round its length --
                     // identical to the old record-falling-edge branch), then
                     // immediately begin overdubbing the same loop.
-                    plugin->recording = 0;
                     if (loop && pLS->state == STATE_RECORD
                             && plugin->transport_valid
                             && plugin->transport_bpm > 0.0
@@ -958,42 +995,28 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                         loop->pLoopStop = loop->pLoopStart + new_length;
                     }
                     if (loop) {
-                        loop = beginOverdub(pLS, loop);
-                        if (loop)
-                            srcloop = loop->srcloop;
-                        else
-                            srcloop = NULL;
+                        beginOverdub(pLS, loop);
                     }
-                    plugin->recording = 1;
                     plugin->surface_state = SURFACE_OVERDUB;
                     break;
 
                 case SURFACE_OVERDUB:
-                    plugin->recording = 0;
                     plugin->pLS->state = STATE_PLAY;
                     plugin->surface_state = SURFACE_PLAYBACK;
                     break;
 
                 case SURFACE_PLAYBACK:
                     // Stop playback; loop content is retained (headLoopChunk
-                    // untouched), just not read back -- same as the old
-                    // play_pause-off passthrough.
-                    plugin->playing = 0;
+                    // untouched), just not read back.
                     plugin->pLS->state = STATE_OFF;
                     plugin->surface_state = SURFACE_STOPPED;
                     break;
 
                 case SURFACE_STOPPED:
                     // Resume playing and re-enter overdub on the same content.
-                    plugin->playing = 1;
                     if (loop) {
-                        loop = beginOverdub(pLS, loop);
-                        if (loop)
-                            srcloop = loop->srcloop;
-                        else
-                            srcloop = NULL;
+                        beginOverdub(pLS, loop);
                     }
-                    plugin->recording = 1;
                     plugin->surface_state = SURFACE_OVERDUB;
                     break;
             }
@@ -1007,10 +1030,19 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
         if(loop) {
             int empty = undoLoop(pLS);
             if (empty) {
-                plugin->started = 0;
                 plugin->initNewLoop = false;
+                // Undid the only take -- nothing left to play. Drop to
+                // EMPTY so a single tap re-arms a fresh take (mirrors the
+                // reset semantics in SURFACE_RECORDING).
+                plugin->surface_state = SURFACE_EMPTY;
+                plugin->pLS->state = STATE_OFF;
+            } else {
+                // Engine now plays the previous take; surface must match
+                // so the next state-port tap walks PLAYBACK -> STOPPED
+                // rather than the stale OVERDUB -> PLAYBACK.
+                plugin->pLS->state = STATE_PLAY;
+                plugin->surface_state = SURFACE_PLAYBACK;
             }
-            pLS->state = STATE_PLAY;
         }
     } else if (*plugin->undo == 0.0 && plugin->undoSet) {
             plugin->undoSet = false;
@@ -1019,7 +1051,8 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
     if (*(plugin->redo) > 0.0 && !plugin->redoSet) {
         if(loop) {
             redoLoop(pLS);
-            pLS->state = STATE_PLAY;
+            plugin->pLS->state = STATE_PLAY;
+            plugin->surface_state = SURFACE_PLAYBACK;
             plugin->redoSet = true;
         }
     } else if (*plugin->redo == 0.0 && plugin->redoSet) {
@@ -1865,9 +1898,6 @@ LV2_Handle SooperLooperPlugin::instantiate(const LV2_Descriptor* descriptor, dou
     plugin->transport_bar_beat = 0.0;
 
     SooperLooper * pLS;
-    plugin->started = 0;
-    plugin->playing = 0;
-    plugin->recording = 0;
     // important note: using calloc to zero all data
     pLS = (SooperLooper *) calloc(1, sizeof(SooperLooper));
     if (pLS == NULL)

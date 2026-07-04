@@ -42,6 +42,11 @@ provides it directly) — not worth fixing.
 references to those blocks in design docs without re-checking
 reachability first.
 
+The wrapper's `plugin->playing` / `plugin->recording` / `plugin->started`
+fields are also dead — the audio loop keys entirely off `pLS->state`.
+They were carried over from the original two-port design and are
+scheduled for removal.
+
 ## `state`/`reset` ports (5-state single-CC cycle)
 
 The old `play_pause`/`record` control-port pair is gone. A single
@@ -54,8 +59,35 @@ step: Empty → Recording → Overdub → Playback → Stopped → Overdub. The
 plugin always writes its current surface state back into the port
 every block, so mod-host's `param_set` echo keeps any bound footswitch
 LED/UI in sync. `reset` (separate `lv2:integer` port, edge-triggered,
-self-clears to 0 after firing) hard-resets to Empty regardless of
-current state.
+self-clears to 0 after firing) is mode-aware:
+
+- **Recording** (initial take in progress — or still in
+  `STATE_TRIG_START` waiting on the bar boundary): the in-progress
+  take is aborted entirely, the chunk stack is cleared, and the
+  surface lands on `SURFACE_EMPTY` — the only state with a
+  transition back to `RECORDING`, so a single tap re-arms a fresh
+  take on the next bar boundary. We deliberately do **not** wipe
+  the buffer and stay in `STATE_RECORD` because if the user reset
+  mid-bar the next tap's bar-rounding would lock `lLoopLength` to a
+  whole number of bars while the audio content inside was offset by
+  the elapsed sub-bar fraction — the resulting loop would be
+  permanently out of phase with every other quantize-locked track.
+  Aborting and re-arming on a clean downbeat is the only way to keep
+  the inter-track guarantee intact.
+- **Overdub**: pops the most-recent overdub chunk (`undoLoop`) — which
+  hands its `dCurrPos` to `srcloop` so the *playback cursor is
+  preserved* — and drops back to `SURFACE_PLAYBACK` /
+  `STATE_PLAY`. The original loop keeps playing from exactly where it
+  was, the new layer is gone, the user can tap again to start a
+  replacement overdub from the same position.
+- **Empty / Playback / Stopped**: the original hard-reset —
+  `clearLoopChunks`, `surface_state = SURFACE_EMPTY`,
+  `pLS->state = STATE_OFF`.
+
+The `undo`/`redo` ports still walk the chunk stack (pop the most-recent
+take / push it back), independently of `reset`. `reset` is the "abort
+what I was doing to the current loop" pedal; `undo` is the "I want
+the previous take back" pedal.
 
 The 5-state wrapper is implemented in terms of the *same* internal
 transitions the old two-port design used (`plugin->playing`,
@@ -71,6 +103,14 @@ that information. Full design rationale is in pi-Stomp's
 The actual "stop recording" event (bar-rounding the initial take's
 length) fires inside the `SURFACE_RECORDING` case of the `state`-port
 switch, not a dedicated `STATE_TRIG_STOP` block (which is unreachable).
+That case also has an early-out for `STATE_TRIG_START` (tap arriving
+before the bar boundary ever fired) — same shape as the reset branch,
+lands on `SURFACE_EMPTY` so a single tap re-arms.
+
+`undo`/`redo` are surface-aware: the engine is forced to `STATE_PLAY`
+and the surface snaps to `SURFACE_PLAYBACK` (or `SURFACE_EMPTY` if the
+chunk list is now drained) so the next state-port tap walks a
+consistent cycle rather than transitioning off a stale surface.
 
 ## Beat sync (time_info port)
 
