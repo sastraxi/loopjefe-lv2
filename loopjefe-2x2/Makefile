@@ -14,7 +14,7 @@ PREFIX ?= /usr/local
 CXX ?= g++
 
 # flags
-CXXFLAGS += -I. -O3 -Wall -fPIC -DPIC -c -DSAMPLE_MEMORY=$(SAMPLE_MEMORY)
+CXXFLAGS += -I. -I../../src -O3 -Wall -fPIC -DPIC -c -DSAMPLE_MEMORY=$(SAMPLE_MEMORY)
 LDFLAGS += -shared -lm
 ifneq ($(MACOS),true)
 LDFLAGS += -Wl,--no-undefined
