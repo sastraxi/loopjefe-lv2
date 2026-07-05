@@ -59,6 +59,17 @@ close-pending state. Pre/post-**overdub** states are defined but unreached
   during a close-pending window, all while pre-record/record/post-record
   → drop take → Empty. (Overdub → pop newest layer → Playback.)
 
+  *Divergence from the RC-505 (mkI):* the RC-505 refuses tempo changes during
+  recording ("You can't switch the tempo during recording", owner's manual p.28
+  — MIDI Sync slave mode ignores incoming clock changes mid-capture). We can't
+  do that: mod-host/JACK broadcasts the new transport to every plugin, and one
+  LV2 plugin can't clamp the host's transport for itself alone. So we abort
+  the take instead — stricter than the RC-505, but the honest way to say "this
+  take can't be salvaged" when the bar grid it was being measured against just
+  shifted. The take's `capture_bpm` is still sampled (for the stretch facet's
+  `recorded_bpm` to use on a successful close); the abort only fires when the
+  bpm *changes* mid-capture.
+
 Rounding is nearest-integer measures (`(bars + 0.5)` truncation) — already
 in the code; the only change is the floor (min-1 clamp → 0 aborts to
 Empty). Seam is crossfade-only: past-boundary samples are ambiguous
