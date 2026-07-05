@@ -370,6 +370,7 @@ public:
     static void cleanup(LV2_Handle instance);
     static const void* extension_data(const char* uri);
     void readTimeInfo();
+    void runControlPorts(LoopChunk*& loop);
     float *in_0;
 #if NUM_CHANNELS > 1
     float *in_1;

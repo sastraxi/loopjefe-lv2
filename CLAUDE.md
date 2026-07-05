@@ -11,7 +11,7 @@ duplicated per bundle — **any change to `loopjefe/src/` (loopjefe.cpp,
 *.ttl, modgui) must be mirrored in `loopjefe-2x2/src/`**, adapted for
 stereo (`NUM_CHANNELS=2`, `*_1` port variants).
 
-`src/shared.h` is now an **umbrella header** that includes six domain
+`src/shared.h` is now an **umbrella header** that includes seven domain
 headers in dependency (DAG) order. The domains:
 
 | File | Owns |
@@ -20,7 +20,8 @@ headers in dependency (DAG) order. The domains:
 | `src/transport.h` | `readTimeInfo` + phase-map helpers |
 | `src/memory.h` | `LoopChunk` lifecycle: arena, push/pop/clear/undo/redo, `fillLoops`, `beginOverdub`/`beginReplace`, `transitionToNext` |
 | `src/stretch.h` | Rubber Band render cache (tempo-follow) |
-| `src/dsp_run.h` | `run()` — preamble + state-machine + DSP switch + tail (the integration point; includes all leaves) |
+| `src/state_machine.h` | `runControlPorts()` — per-block control-port preamble (tempo-change abort, reset/advance/undo/redo, surface-cycle transitions) |
+| `src/dsp_run.h` | `run()` — prologue + `runControlPorts()` call + DSP switch + tail (the integration point; includes all leaves) |
 | `src/lv2_entry.h` | `Descriptor`, `lv2_descriptor()`, instantiate/activate/deactivate/cleanup/extension_data |
 
 The bundle `.cpp` sets `NUM_CHANNELS` / `TEMP_BUFFER_SIZE` / `PLUGIN_URI` /
@@ -43,8 +44,9 @@ renaming the directory is the whole rename.
 - `make MACOS=true` — local compile check on this Mac (lv2-dev via homebrew)
 - `cd tests && make check` — in-process engine unit tests (no JACK/mod-host;
   drives `run()` directly via a fake LV2 host). See `tests/README.md` for
-  how the host works and how to add a test. **Run after any `shared.h`
-  change.**
+  how the host works and how to add a test. **Run after any change to
+  `src/*.h`** (the umbrella includes all of them; the test Makefile tracks
+  `shared.h` so any domain header change forces a rebuild).
 
 ## State machine — the contract (don't regress these)
 
@@ -85,13 +87,15 @@ Recording family (`RECORD_ARM`/`RECORD`/`RECORD_CLOSE`) → Empty; Overdub
 family (`OVERDUB_ARM`/`OVERDUB`/`OVERDUB_CLOSE`) → Playback (pop layer /
 cancel arm, cursor preserved). Free-run never trips this. `capture_bpm`
 is sampled at the arm site (record and overdub) so a change between arm
-and the boundary aborts.
+and the boundary aborts. Handled in `runControlPorts()` (`state_machine.h`),
+which runs before the reset/advance handlers so an abort takes precedence
+over a coincident tap.
 
 ## Engine internals — gotchas before editing state logic
 
 - **Reachable engine states**: `STATE_OFF`, `RECORD_ARM`, `RECORD`,
   `RECORD_CLOSE`, `PLAY`, `OVERDUB`, `OVERDUB_ARM`, `OVERDUB_CLOSE`.
-  All other `STATE_*` blocks in the `run()` switch (`MULTIPLY`, `INSERT`,
+  All other `STATE_*` blocks in the `run()` DSP switch (`MULTIPLY`, `INSERT`,
   `REPLACE`, `DELAY`, `MUTE`, `SCRATCH`, `ONESHOT`) are unreachable —
   don't trust design-doc line refs into them without re-checking.
 - **Symmetric arm/capture/close trios.** Record: `RECORD_ARM`/`RECORD`/
@@ -105,11 +109,11 @@ and the boundary aborts.
 - **`surface_state` is the UI-cycle source of truth.** Empty and Stopped
   both map to engine `STATE_OFF`; only `surface_state` distinguishes them.
 - **"Stop recording"** (bar-rounding the take) fires in the
-  `SURFACE_RECORDING` case of the advance switch in `run()` — not in
-  any `STATE_RECORD_CLOSE` block.
+  `SURFACE_RECORDING` case of the advance switch in `runControlPorts()`
+  (`state_machine.h`) — not in any `STATE_RECORD_CLOSE` DSP block.
 - **`undo`/`redo`** walk the chunk stack independently of `reset`; both
   force engine `STATE_PLAY` and snap surface to Playback (or Empty if
-  drained).
+  drained). Handled in `runControlPorts()`.
 - **The audience-facing playback cursor is sacred.** Overdub abort/commit
   preserves `dCurrPos` (via `undoLoop` handing it to `srcloop`, or by
   leaving it in place on force-close). Never phase-reset on commit or

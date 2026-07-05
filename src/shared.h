@@ -48,19 +48,24 @@
    .cpp when crossing TU boundaries.
 
    DAG (include order):
-     types.h        -- structs, enums, constants, class declaration (root)
-       transport.h  -- time:Position reading + phase-map helpers
-       memory.h     -- LoopChunk lifecycle (arena, push/pop/clear/undo/redo,
-                       fill, beginOverdub/beginReplace, transitionToNext)
-       stretch.h    -- Rubber Band render cache (tempo-follow)
-       dsp_run.h    -- run(): preamble + state-machine + DSP switch + tail
-                       (the integration point; includes all leaves above)
-       lv2_entry.h  -- Descriptor, lv2_descriptor(), instantiate/activate/
-                       deactivate/cleanup/extension_data (includes dsp_run.h) */
+     types.h          -- structs, enums, constants, class declaration (root)
+       transport.h    -- time:Position reading + phase-map helpers
+       memory.h       -- LoopChunk lifecycle (arena, push/pop/clear/undo/redo,
+                         fill, beginOverdub/beginReplace, transitionToNext)
+       stretch.h      -- Rubber Band render cache (tempo-follow)
+       state_machine.h -- runControlPorts(): the per-block control-port
+                         preamble (tempo-change abort, reset/advance/
+                         undo/redo, surface-cycle transitions)
+       dsp_run.h      -- run(): prologue + runControlPorts() call + DSP
+                         switch + tail (the integration point; includes all
+                         leaves above)
+       lv2_entry.h    -- Descriptor, lv2_descriptor(), instantiate/activate/
+                         deactivate/cleanup/extension_data (includes dsp_run.h) */
 
 #include "types.h"
 #include "transport.h"
 #include "memory.h"
 #include "stretch.h"
+#include "state_machine.h"
 #include "dsp_run.h"
 #include "lv2_entry.h"
