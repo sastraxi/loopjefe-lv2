@@ -310,6 +310,20 @@ struct PluginHost {
         LoopChunk *l = plugin()->pLS->headLoopChunk;
         return l ? l->pLoopStart[idx] : 0.0f;
     }
+
+    // Peek a recorded sample by (channel, frame), abstracting the buffer
+    // layout so value-asserting tests survive the interleaved->planar
+    // refactor. TODAY pLoopStart is a single interleaved slab, so frame f
+    // channel c lives at index f*NUM_CHANNELS + c. AFTER the planar
+    // refactor (pLoopStart becomes LADSPA_Data*[NUM_CHANNELS]), change the
+    // body to `l->pLoopStart[c][frame]`. This one accessor is the only
+    // place the stereo lifecycle tests touch the raw layout.
+    float loop_sample_ch(unsigned c, unsigned long frame)
+    {
+        LoopChunk *l = plugin()->pLS->headLoopChunk;
+        if (!l) return 0.0f;
+        return l->pLoopStart[frame * NUM_CHANNELS + c];
+    }
 };
 
 #endif /* LV2_TEST_HOST_H */
