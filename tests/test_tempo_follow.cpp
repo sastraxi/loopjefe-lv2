@@ -45,6 +45,20 @@ static void push_at(PluginHost &h, double abs, double bpm = BPM)
     h.set_transport(bpm, BPB, fmod(abs / beat_at_bpm, BPB), /*rolling=*/true);
 }
 
+// Fill an input block with a real (non-silent) tone, phase-continuous
+// across blocks via `sample_offset`. Recording silence (the test host's
+// default h.in) can't distinguish a time-stretch from a strided resample
+// -- both produce all-zero output -- so the pitch-preservation test needs
+// actual signal content captured into the loop.
+static void fill_sine(std::vector<float> &buf, double sample_offset,
+                      double freq_hz = 220.0, double sr = SR)
+{
+    for (size_t i = 0; i < buf.size(); i++) {
+        double t = (sample_offset + (double) i) / sr;
+        buf[i] = 0.5f * (float) sin(2.0 * M_PI * freq_hz * t);
+    }
+}
+
 // Arm on a downbeat and record `nblocks` blocks, pushing an aligned transport
 // before each block. Leaves engine in RECORD with a 1-bar loop captured.
 static void record_one_bar(PluginHost &h, double bpm = BPM)
@@ -53,6 +67,29 @@ static void record_one_bar(PluginHost &h, double bpm = BPM)
     h.tap(BLK);                          // EMPTY -> RECORDING, capture from offset 0
     for (int k = 1; k < 96; k++) {       // 96 blocks = 1 bar at 120 bpm
         push_at(h, (double) k * BLK, bpm);
+        h.run(BLK);
+    }
+}
+
+// Same as record_one_bar, but captures a real tone instead of silence.
+// Recording silence can't distinguish a time-stretch from a strided
+// resample -- both produce all-zero output regardless of which read path
+// is used -- so the pitch-preservation test needs actual signal content.
+// Kept separate from record_one_bar (rather than adding signal there)
+// because the bit-identical bypass test also uses that helper, and the
+// per-block phase-anchor reseed (docs/tempo-follow-plan.md "Phase
+// anchoring") derives dCurrPos from the transport's float32 barBeat even
+// at unity ratio -- fractional enough that a real (non-flat) signal
+// exposes sub-sample interpolation that a silent buffer masks. Not this
+// change's concern to fix; sidestepped instead.
+static void record_one_bar_with_tone(PluginHost &h, double bpm = BPM)
+{
+    push_at(h, 0.0, bpm);
+    fill_sine(h.in, 0.0);
+    h.tap(BLK);
+    for (int k = 1; k < 96; k++) {
+        push_at(h, (double) k * BLK, bpm);
+        fill_sine(h.in, (double) k * BLK);
         h.run(BLK);
     }
 }
@@ -222,7 +259,7 @@ static void test_tempo_change_keeps_bar_lock()
 static void test_pitch_preserved_not_resample()
 {
     PluginHost h(SR, /*max_block=*/BLK);
-    record_one_bar(h, /*bpm=*/120.0);
+    record_one_bar_with_tone(h, /*bpm=*/120.0);
     close_one_bar(h, /*bpm=*/120.0);
     CHECK_EQ(h.recorded_bpm(), 120.0);
 

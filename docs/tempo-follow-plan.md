@@ -11,10 +11,10 @@ Two coupled goals:
 
 ## Status
 
-The **recording / quantize** half and **phase anchoring** (the
-constant-tempo drift fix) are built and green. Pitch-preserving stretch
-(Rubber Band) is not integrated yet — a stable non-unity ratio currently
-falls back to a plain resample (bar-locked, not pitch-locked).
+The **recording / quantize** half, **phase anchoring** (the constant-tempo
+drift fix), and **pitch-preserving stretch** are built and green. A stable
+non-unity ratio now renders through Rubber Band instead of falling back to
+a plain resample.
 
 **Done (✓ in code):**
 - Bar-quantized record lifecycle (downbeat start, round-up/down close,
@@ -43,10 +43,41 @@ falls back to a plain resample (bar-locked, not pitch-locked).
   accumulates — unlike the free-running counter it replaces).
 
 **Not started (⚑ — all design-only):**
-1. **Rubber Band pitch stretch** — not integrated — `test_tempo_follow.cpp`
-   (`test_pitch_preserved_not_resample`, red by design until this lands)
-2. **Render cache as the stretch bridge** — designed, load-bearing, unbuilt
-3. **Latency compensation** — `test_latency_comp.cpp`
+1. **Latency compensation** — `test_latency_comp.cpp`
+2. **Incremental render-cache fill** — the cache is currently rendered
+   *synchronously* (a single blocking offline Rubber Band pass) the first
+   block a stable non-unity ratio is seen at a given transport bpm, rather
+   than filled incrementally across blocks as the playhead advances. Fine
+   for a several-second loop today (sub-millisecond blocking call in
+   practice) but not realtime-safe in the strict sense for a much longer
+   loop; the plan's original incremental design is still the eventual fix.
+3. **Ramping tempo** — falls back to nothing today (the cache-miss path
+   just re-renders synchronously every block at a changing bpm); the
+   plan's streaming-Rubber-Band-during-a-ramp path is unbuilt.
+
+**Done (✓ in code), continued:**
+- **Rubber Band pitch stretch** — `test_tempo_follow.cpp`
+  (`test_pitch_preserved_not_resample` green). Implemented as the render
+  cache directly (merging plan items 1 and 2): `LoopChunk` gained
+  `cached_bpm`/`pCacheStart`/`lCacheLength`; `renderStretchCache()`
+  (`src/shared.h`) does an offline `RubberBandStretcher` pass (R3 Finer,
+  short window, per the locked decision) over the chunk's whole native
+  buffer whenever `transport_bpm != cached_bpm` at a non-unity ratio,
+  keyed on the raw bpm (not the ratio) exactly as the render-cache design
+  specifies. The phase-anchored `dCurrPos`/`dTempoRate` machinery is
+  untouched — it still drives bar-lock in native-sample space at every
+  ratio; only the STATE_PLAY interpolation *read* branches to the cache
+  (native `lCurrPos` divides through by the same ratio to index the
+  cache, so the cache wraps exactly when `dCurrPos` wraps). Unity ratio
+  still bypasses to the raw buffer, bit-identical. Freed alongside
+  `pStretcher` on the same four destroy paths (`clearLoopChunks`).
+  `test_pitch_preserved_not_resample` needed a real (sine) test signal —
+  the existing `record_one_bar` helper captures silence, which can't
+  distinguish a stretch from a resample (both are all-zero); added
+  `record_one_bar_with_tone` rather than changing the shared helper,
+  since the bit-identical bypass test's tolerance for the phase-anchor's
+  per-block reseed (fractional even at unity ratio, from the transport's
+  float32 `barBeat`) only holds against a silent buffer.
 
 **Done (✓ in code), continued:**
 - **Overdub audio path** — `test_overdub.cpp`: sums layers, undo/redo pops
@@ -429,7 +460,7 @@ per group, self-evident names. ⚑ = fails today (drives the change);
 | File | Cases |
 |---|---|
 | `test_record_lifecycle.cpp` ✓ | start snaps to downbeat; free-run starts immediately; round-up waits for boundary; round-down truncates; sub-½-measure → Empty; phase cursor = `fmod`; playback stays grid-locked; 2nd tap in pending aborts |
-| `test_tempo_follow.cpp` | unity ratio bypasses the *pitch stretch* (no Rubber Band engaged) ✓; no-anchor uses the free-run counter ✓; 120→140 keeps bar-lock ✓ (resample, not pitch-preserving); pitch preserved ⚑; `recorded_bpm`/`anchor_beat`/`loop_beats` captured at close ✓ |
+| `test_tempo_follow.cpp` ✓ | unity ratio bypasses the *pitch stretch* (no Rubber Band engaged) ✓; no-anchor uses the free-run counter ✓; 120→140 keeps bar-lock ✓; pitch preserved (not a strided resample) ✓, via the render-cache-rendered Rubber Band pass; `recorded_bpm`/`anchor_beat`/`loop_beats` captured at close ✓ |
 | `test_phase_anchor.cpp` ✓ | **matched-tempo, non-integer bar length** (127.98 BPM, SR 44100, period 1000, tuned so the rounding error sits near its ~0.5-sample worst case): the real-time interval between successive engine wraps matches the true fractional bar length to within 0.25 sample, no cumulative drift over ~50 wraps, checked against an independent oracle (not the engine's own anchor-formula math); free-run take (`recorded_bpm == 0`) still uses the integrated counter. Not yet covered: xrun/transport-relocation recovery, and undo/redo swapping `anchor_beat`/`loop_beats` across chunks. |
 | `test_tempo_change_aborts.cpp` ✓ | bpm change while recording → Empty; while armed → Empty; while close-pending → Empty; unchanged bpm is a no-op; bpm change in playback is a no-op; while overdub armed → Playback; while overdub capturing → Playback; while overdub close-pending → Playback |
 | `test_latency_comp.cpp` | playback read-ahead = stretcher latency ⚑; overdub impulse lands within ±2 samples ⚑ |
