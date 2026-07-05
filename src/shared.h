@@ -90,6 +90,14 @@ typedef float LADSPA_Data;
 // stretching would cost CPU for an inaudible correction.
 #define STRETCH_RATIO_EPS 0.0005
 
+// Below this ratio (target bpm / recorded bpm), the render cache is skipped
+// entirely and playback falls back to the raw/resample path -- see
+// docs/tempo-follow-plan.md "Ratio floor". No upper bound: faster tempos
+// aren't a memory problem, only much slower ones are.
+#ifndef MIN_STRETCH_RATIO
+#define MIN_STRETCH_RATIO 0.2
+#endif
+
 // settle time for tap trigger (trigger if two changes
 // happen within at least X samples)
 //#define TRIG_SETTLE  4410
@@ -531,22 +539,17 @@ static inline double phaseMapPhase01(double abs_beats_now, double anchor_beat, d
 
 static const unsigned long STRETCH_FEED_CHUNK = 256;
 
-// (Re)start the render-cache generation for `target_bpm`. Sizes the side
-// buffer and stretcher but feeds no audio yet -- ensureStretchCacheFilled()
-// does that. cached_bpm is set immediately so the call site's guard only
-// fires once per bpm change, not every block while filling.
+// (Re)start the render-cache generation for `target_bpm`. The stretcher
+// instance itself is kept alive across ratio changes (only the four hard
+// destroy paths delete it) -- a mid-ramp bpm change just calls setTimeRatio()
+// and reset()s its internal buffers, so there's no cold-restart glitch.
+// Only cache bookkeeping is invalidated here; the side buffer grows via
+// realloc as needed but is never shrunk. Sizes/resets but feeds no audio
+// yet -- ensureStretchCacheFilled() does that. cached_bpm is set immediately
+// so the call site's guard only fires once per bpm change, not every block.
 static void startStretchCacheGeneration(LoopChunk *loop, double sample_rate, double target_bpm)
 {
-    if (loop->pStretcher) {
-        delete loop->pStretcher;
-        loop->pStretcher = NULL;
-    }
-    if (loop->pCacheStart) {
-        free(loop->pCacheStart);
-        loop->pCacheStart = NULL;
-    }
     loop->lCacheLength = 0;
-    loop->lCacheCapacity = 0;
     loop->lRenderPos = 0;
     loop->cached_bpm = 0.0;
 
@@ -557,13 +560,21 @@ static void startStretchCacheGeneration(LoopChunk *loop, double sample_rate, dou
     double ratio = target_bpm / loop->recorded_bpm;
     double timeRatio = 1.0 / ratio;
 
-    loop->lCacheCapacity = (unsigned long) (loop->lLoopLength / ratio) + 4096;
-    loop->pCacheStart = (LADSPA_Data *) malloc(loop->lCacheCapacity * sizeof(LADSPA_Data));
+    unsigned long neededCapacity = (unsigned long) (loop->lLoopLength / ratio) + 4096;
+    if (neededCapacity > loop->lCacheCapacity) {
+        loop->pCacheStart = (LADSPA_Data *) realloc(loop->pCacheStart,
+            neededCapacity * sizeof(LADSPA_Data));
+        loop->lCacheCapacity = neededCapacity;
+    }
 
-    loop->pStretcher = new RubberBand::RubberBandStretcher((size_t) sample_rate, 1,
-        RubberBand::RubberBandStretcher::OptionProcessRealTime
-            | RubberBand::RubberBandStretcher::OptionEngineFiner
-            | RubberBand::RubberBandStretcher::OptionWindowShort);
+    if (!loop->pStretcher) {
+        loop->pStretcher = new RubberBand::RubberBandStretcher((size_t) sample_rate, 1,
+            RubberBand::RubberBandStretcher::OptionProcessRealTime
+                | RubberBand::RubberBandStretcher::OptionEngineFiner
+                | RubberBand::RubberBandStretcher::OptionWindowShort);
+    } else {
+        loop->pStretcher->reset();
+    }
     loop->pStretcher->setTimeRatio(timeRatio);
 
     loop->cached_bpm = target_bpm;
@@ -2242,7 +2253,7 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                             // new bpm starts a fresh cache generation that
                             // fills incrementally as the playhead needs it
                             // (see ensureStretchCacheFilled).
-                            if (fabs(ratio - 1.0) > STRETCH_RATIO_EPS) {
+                            if (fabs(ratio - 1.0) > STRETCH_RATIO_EPS && ratio >= MIN_STRETCH_RATIO) {
                                 if (loop->cached_bpm != plugin->transport_bpm) {
                                     startStretchCacheGeneration(loop, pLS->fSampleRate, plugin->transport_bpm);
                                 }

@@ -336,6 +336,95 @@ static void test_render_cache_fills_incrementally()
     CHECK_EQ(loop->lRenderPos, loop->lLoopLength);
 }
 
+// Below MIN_STRETCH_RATIO (0.2), the cache is skipped entirely -- the ratio
+// is too extreme to render usefully, so playback falls back to the raw path.
+static void test_ratio_below_floor_skips_cache()
+{
+    PluginHost h(SR, /*max_block=*/BLK);
+    record_one_bar_with_tone(h, /*bpm=*/120.0);
+    close_one_bar(h, /*bpm=*/120.0);
+    mute_dry(h);
+
+    const double new_bpm = 20.0;   // ratio = 0.1667, below the 0.2 floor
+    LoopChunk *loop = h.plugin()->pLS->headLoopChunk;
+    CHECK(loop != NULL);
+    if (!loop) return;
+
+    push_at(h, 0.0, new_bpm);
+    h.in.assign(BLK, 0.0f);
+    h.out.assign(BLK, 0.0f);
+    h.run(BLK);
+
+    CHECK(loop->pCacheStart == NULL);
+    CHECK_EQ(loop->cached_bpm, 0.0);
+}
+
+// A ratio change mid-playback (still a capture state, not a hard destroy
+// path) must invalidate cache bookkeeping without recreating the
+// RubberBandStretcher instance -- that's the whole point of the persistent-
+// stretcher fix (see docs/tempo-follow-plan.md "Smooth-ramp behavior"): the
+// object identity survives, only setTimeRatio()/reset() touch it.
+static void test_ratio_change_keeps_same_stretcher_instance()
+{
+    PluginHost h(SR, /*max_block=*/BLK);
+    record_one_bar_with_tone(h, /*bpm=*/120.0);
+    close_one_bar(h, /*bpm=*/120.0);
+    mute_dry(h);
+
+    LoopChunk *loop = h.plugin()->pLS->headLoopChunk;
+    CHECK(loop != NULL);
+    if (!loop) return;
+
+    push_at(h, 0.0, /*bpm=*/140.0);
+    h.in.assign(BLK, 0.0f);
+    h.out.assign(BLK, 0.0f);
+    h.run(BLK);
+
+    RubberBand::RubberBandStretcher *first = loop->pStretcher;
+    CHECK(first != NULL);
+
+    push_at(h, (double) BLK, /*bpm=*/160.0);
+    h.in.assign(BLK, 0.0f);
+    h.out.assign(BLK, 0.0f);
+    h.run(BLK);
+
+    CHECK(loop->pStretcher == first);
+    CHECK_EQ(loop->cached_bpm, 160.0);
+}
+
+// Rapid, wide bpm swings (near the floor, far above it, back and forth)
+// must never leak a NaN/Inf sample into the output -- mod-host/mod-ui
+// don't tolerate that, and the persistent-stretcher fix reuses the same
+// RubberBandStretcher instance across ratio changes instead of getting a
+// fresh one each time, so a bad reset()/setTimeRatio() sequence could in
+// principle poison its internal state across calls.
+static void test_wide_ratio_swings_never_produce_nan()
+{
+    PluginHost h(SR, /*max_block=*/BLK);
+    record_one_bar_with_tone(h, /*bpm=*/120.0);
+    close_one_bar(h, /*bpm=*/120.0);
+    mute_dry(h);
+
+    const double bpms[] = { 140.0, 25.0, 600.0, 24.0, 119.9, 30.0, 200.0, 24.5 };
+    const int nbpms = (int) (sizeof(bpms) / sizeof(bpms[0]));
+
+    for (int k = 0; k < nbpms * 3; k++) {
+        push_at(h, (double) k * BLK, bpms[k % nbpms]);
+        h.in.assign(BLK, 0.0f);
+        h.out.assign(BLK, 0.0f);
+        h.run(BLK);
+
+        for (size_t i = 0; i < h.out.size(); i++) {
+            if (!std::isfinite(h.out[i])) {
+                CHECK(false);
+                return;
+            }
+        }
+    }
+
+    CHECK(true);   // reached the end without tripping the finite-ness check above
+}
+
 int main()
 {
     test_unity_ratio_bypasses_bit_identical();
@@ -343,5 +432,8 @@ int main()
     test_tempo_change_keeps_bar_lock();
     test_pitch_preserved_not_resample();
     test_render_cache_fills_incrementally();
+    test_ratio_below_floor_skips_cache();
+    test_ratio_change_keeps_same_stretcher_instance();
+    test_wide_ratio_swings_never_produce_nan();
     return test_summary("test_tempo_follow");
 }

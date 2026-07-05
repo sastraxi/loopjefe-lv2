@@ -44,9 +44,31 @@ a plain resample.
 
 **Not started (⚑ — all design-only):**
 1. **Latency compensation** — `test_latency_comp.cpp`
-2. **Ramping tempo** — falls back to nothing today (the cache-miss path
-   just restarts the render generation every block at a changing bpm); the
-   plan's streaming-Rubber-Band-during-a-ramp path is unbuilt.
+2. **Stereo channels / allocation strategy** — two related decisions,
+   not yet wired into `src/shared.h` (see "Render cache" → "Stereo
+   channels", "Allocation strategy"): two single-channel
+   buffers/stretchers per chunk for 2x2 instead of one fed an
+   interleaved stream; `pCacheStart` stays dynamically
+   malloc'd/realloc'd on demand (confirmed, not changed).
+
+**Done (✓ in code), continued:**
+- **Persistent stretcher across ratio changes** — `test_tempo_follow.cpp`
+  (`test_ratio_change_keeps_same_stretcher_instance`). Fixes the ramping-
+  tempo cold-restart glitch: `startStretchCacheGeneration` no longer
+  deletes/recreates `pStretcher` on a ratio change, only on the hard
+  destroy paths. It now calls `setTimeRatio()` + `reset()` on the live
+  instance and only resets cache bookkeeping (`lCacheLength`/
+  `lRenderPos`); the side buffer grows via `realloc`, never shrinks on a
+  plain ratio change. See "Render cache" → "Smooth-ramp behavior".
+
+**Done (✓ in code), continued:**
+- **Ratio floor** — `test_tempo_follow.cpp`
+  (`test_ratio_below_floor_skips_cache`). `MIN_STRETCH_RATIO` (default
+  `0.2`, build-time constant in both Makefiles) is now checked at the
+  STATE_PLAY cache-generation call site alongside `STRETCH_RATIO_EPS`:
+  below the floor, `startStretchCacheGeneration` is never called and
+  playback falls back to the existing raw/resample path (`pCacheStart`
+  stays `NULL`). No upper bound — faster tempos aren't a memory problem.
 
 **Done (✓ in code), continued:**
 - **Incremental render-cache fill** — `test_tempo_follow.cpp`
@@ -412,19 +434,52 @@ Per block, after computing `ratio`:
 3. Once the playhead wraps past the fill point, the cache is fully
    populated and subsequent wraps are pure reads.
 
-**Smooth-ramp behavior.** When the host ramps tempo continuously,
-`transport_bpm` changes every block, so the cache is invalidated every
-block and never completes a wrap → behaves like realtime-only. That's
-fine: ramps are transient, and realtime stretch is the slow path you'd
-be on anyway. The cache only pays off when tempo stabilizes — exactly
-the case worth optimizing. No debounce needed; invalidation falls out
-of the key changing.
+**Smooth-ramp behavior (✓ in code, `test_ratio_change_keeps_same_stretcher_instance`).**
+Previously, any bpm change — a ramp or a one-time step, doesn't matter —
+tore down and recreated the `RubberBandStretcher` itself
+(`startStretchCacheGeneration`), losing its internal windowing/phase
+state and producing an audible cold-restart glitch every time it
+happened. That was wrong: bar-lock is never at risk from a ramp
+(`dCurrPos` is re-derived from the transport's `bar`/`barBeat` every
+block regardless of ratio stability — see "Phase anchoring"; a ramp
+never touches drift), so there was no reason ratio changes needed to be
+expensive or lossy. Fixed with cheaper invalidation, not a "ramping vs
+stable" mode switch: the *same* `RubberBandStretcher` instance now stays
+alive across a ratio change (`setTimeRatio()` + `reset()` on the live
+instance, both supported mid-stream) and only the cache *bookkeeping*
+resets (`lCacheLength = lRenderPos = 0`) — the stretcher is only ever
+torn down on the hard destroy paths (`clearLoopChunks`), same as always.
+The side buffer grows via `realloc` as capacity needs increase and is
+never shrunk or freed on a plain ratio change. Remaining subtlety, already
+resolved by the existing per-block granularity rather than needing new
+code: the array-index read formula (`cache_idx = native_pos / ratio`)
+is only ever applied against a cache generation rendered at that same
+ratio, because `cached_bpm` is compared every block and any change
+invalidates the cache before it's read — so a continuously ramping bpm
+just invalidates every block (falling back to feeding freshly, one
+`STRETCH_FEED_CHUNK` at a time) rather than needing a distinct
+sequential-stream read mode.
 
 **Gotcha — the key is the bpm, not the ratio.** Comparing
 `ratio == cached_ratio` after `transport_bpm / recorded_bpm` would break
 on float rounding. Comparing the raw `transport_bpm == cached_bpm` with
 `==` is safe because no arithmetic touches the value between
 `readTimeInfo()` and the comparison.
+
+**NaN safety.** `mod-host`/`mod-ui` don't tolerate NaN/Inf on an audio
+port. The only division in the stretch path is `1.0 / ratio` and
+`native_pos / stretchRatio`, both guarded against a zero denominator by
+`MIN_STRETCH_RATIO` and the `recorded_bpm > 0` / `transport_bpm > 0`
+checks already required to enter the stretch branch at all — no path
+divides by an unchecked zero. `test_wide_ratio_swings_never_produce_nan`
+sweeps bpm across small/large/rapidly-alternating values (including
+right at the `MIN_STRETCH_RATIO` floor) and asserts every output sample
+stays finite, specifically to catch the risk introduced by the
+persistent-stretcher fix above: reusing one `RubberBandStretcher`
+instance across ratio changes (instead of a fresh instance every time)
+means a bad `reset()`/`setTimeRatio()` interaction could in principle
+poison internal state across calls in a way a from-scratch instance
+never could. No failure found under this sweep.
 
 **Lifetime / memory.** One side buffer per chunk, same lifetime rules
 as the stretcher handle from the undo/redo section above: kept across
@@ -433,6 +488,40 @@ paths (`clearLoopChunks`, sub-½-measure discard, both tempo-change
 aborts). For a 4-bar loop at 48k that's ~8 s × 4 bytes × NUM_CHANNELS
 per active chunk; on the 2x2 with several stacked layers it adds up,
 which is why this is opt-in future work, not v1.
+
+**Ratio floor (✓ in code, `test_ratio_below_floor_skips_cache`).** A cache sized for the
+full stretched loop grows unboundedly as `ratio` shrinks (half-speed
+doubles the buffer, a tenth-speed needs 10x) — nothing bounds how low a
+host can set `transport_bpm` relative to `recorded_bpm`. Decision: a
+flat, build-time floor, `MIN_STRETCH_RATIO` (default `0.2`, i.e. 1:5),
+set per-bundle in each Makefile the same way `SAMPLE_MEMORY` already is
+(`-DMIN_STRETCH_RATIO=$(MIN_STRETCH_RATIO)`). Below the floor, skip the
+cache — read live instead. (No combining this with `SAMPLE_MEMORY` into
+a derived per-chunk bound; considered and rejected in favor of one flat
+constant, simpler to reason about.) Caveat: "read live" below the floor
+currently means falling back to the existing bypass/resample path, *not*
+true pitch-preserving live stretch — that mechanism doesn't exist until
+the smooth-ramp work above is built.
+
+**Stereo channels (⚑ decided, not yet wired in code).** The cache as
+currently coded assumes single-channel audio and doesn't handle
+`NUM_CHANNELS` at all — on `loopjefe-2x2`, `pLoopStart` is interleaved
+stereo, and today's `pStretcher`/`pCacheStart` treat that interleaved
+buffer as if it were one channel (a real gap, not yet hit because no
+test exercises 2x2 tempo-follow). Decision: two independent single-channel
+buffers/stretchers per chunk (one per channel), driven off the same
+native-buffer pointers with a stride of `NUM_CHANNELS` — not one
+stretcher fed an interleaved stream.
+
+**Allocation strategy (⚑ decided, confirmed as already the design).**
+`pCacheStart` is malloc'd/realloc'd on demand (`startStretchCacheGeneration`),
+not pre-allocated — this is intentional, not a shortcut: cache generations
+are rare relative to audio blocks (one per bpm change, not one per block),
+so the realtime cost of a dynamic allocation there is acceptable, same
+tradeoff the codebase already made for cache invalidation before this
+plan existed. This is a different pool from `pSampleBuf`/`lBufferSize`
+(the raw-audio arena sized from `SAMPLE_MEMORY` at construction) — that
+one stays pre-allocated once, unrelated to cache sizing.
 
 **What doesn't change.** `dCurrPos` stays in recorded-sample space; the
 cache is a parallel read path, not a re-rendering of the chunk. The

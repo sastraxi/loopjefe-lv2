@@ -3,6 +3,10 @@
 # plugin to have available.
 SAMPLE_MEMORY = 200
 
+# Below this ratio (target bpm / recorded bpm), tempo-follow stretch skips
+# the render cache -- see docs/tempo-follow-plan.md "Render cache".
+MIN_STRETCH_RATIO = 0.2
+
 # plugin name
 PLUGIN = $(shell basename $(shell pwd) | tr A-Z a-z)
 PLUGIN_SO = $(PLUGIN).so
@@ -14,7 +18,7 @@ PREFIX ?= /usr/local
 CXX ?= g++
 
 # flags
-CXXFLAGS += -I. -I../../src -O3 -Wall -fPIC -DPIC -c -DSAMPLE_MEMORY=$(SAMPLE_MEMORY)
+CXXFLAGS += -I. -I../../src -O3 -Wall -fPIC -DPIC -c -DSAMPLE_MEMORY=$(SAMPLE_MEMORY) -DMIN_STRETCH_RATIO=$(MIN_STRETCH_RATIO)
 LDFLAGS += -shared -lm
 ifneq ($(MACOS),true)
 LDFLAGS += -Wl,--no-undefined
