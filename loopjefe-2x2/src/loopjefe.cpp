@@ -34,7 +34,7 @@
 
 #define PLUGIN_URI "http://treefallsound.com/plugins/loopjefe-2x2"
 
-enum {IN_0, IN_1, OUT_0, OUT_1, STATE, RESET, UNDO, REDO, DRY_LEVEL, TIME_INFO, PLUGIN_PORT_COUNT};
+enum {IN_0, IN_1, OUT_0, OUT_1, STATE, ADVANCE, RESET, UNDO, REDO, DRY_LEVEL, TIME_INFO, PLUGIN_PORT_COUNT};
 
 #define TEMP_BUFFER_SIZE 8192
 #define NUM_CHANNELS 2
@@ -66,6 +66,9 @@ void SooperLooperPlugin::connect_port(LV2_Handle instance, uint32_t port, void *
         break;
     case STATE:
         plugin->state = (float*) data;
+        break;
+    case ADVANCE:
+        plugin->advance = (float*) data;
         break;
     case RESET:
         plugin->reset = (float*) data;

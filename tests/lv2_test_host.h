@@ -87,8 +87,10 @@ struct PluginHost {
     double sample_rate;
     uint32_t max_block;
 
-    // control ports (single floats)
-    float state = 0, reset = 0, undo = 0, redo = 0, dry_level = 1.0f;
+    // control ports (single floats). `state` is now a read-only output;
+    // `advance` is the momentary one-step trigger (rising edge = one
+    // surface-cycle step, self-clears, mirroring reset).
+    float state = 0, advance = 0, reset = 0, undo = 0, redo = 0, dry_level = 1.0f;
     // audio ports
     std::vector<float> in, out;
     // time:Position atom sequence buffer (connected to TIME_INFO)
@@ -137,11 +139,12 @@ struct PluginHost {
     void connect_all()
     {
         SooperLooperPlugin::connect_port(handle, IN_0,      in.data());
-        SooperLooperPlugin::connect_port(handle, OUT_0,     out.data());
-        SooperLooperPlugin::connect_port(handle, STATE,     &state);
-        SooperLooperPlugin::connect_port(handle, RESET,     &reset);
-        SooperLooperPlugin::connect_port(handle, UNDO,      &undo);
-        SooperLooperPlugin::connect_port(handle, REDO,      &redo);
+        SooperLooperPlugin::connect_port(handle, OUT_0,    out.data());
+        SooperLooperPlugin::connect_port(handle, STATE,    &state);
+        SooperLooperPlugin::connect_port(handle, ADVANCE,  &advance);
+        SooperLooperPlugin::connect_port(handle, RESET,    &reset);
+        SooperLooperPlugin::connect_port(handle, UNDO,     &undo);
+        SooperLooperPlugin::connect_port(handle, REDO,     &redo);
         SooperLooperPlugin::connect_port(handle, DRY_LEVEL, &dry_level);
         SooperLooperPlugin::connect_port(handle, TIME_INFO, time_buf.data());
     }
@@ -192,13 +195,21 @@ struct PluginHost {
         SooperLooperPlugin::run(handle, nframes);
     }
 
-    // Simulate an external state-port write (footswitch/CC/mod-ui), then
-    // process one block: advances the surface cycle exactly one step.
-    void tap(uint32_t nframes = 256)
+    // Simulate an external advance-port write (footswitch/CC/mod-ui), then
+    // process one block: advances the surface cycle exactly one step. The
+    // engine self-clears the port and latches advanceSet inside run(); we
+    // clear advanceSet here so the next tap() fires cleanly without needing
+    // an intervening run() (matches the old sentinel-tap ergonomics, where
+    // every tap() was an independent edge).
+    void pulse_advance(uint32_t nframes = 256)
     {
-        state = (float)STATE_TAP_SENTINEL;
+        advance = 1.0f;
         run(nframes);
+        plugin()->advanceSet = false;
     }
+
+    // Old name preserved for test readability; routes through advance now.
+    void tap(uint32_t nframes = 256) { pulse_advance(nframes); }
 
     // Trigger the momentary reset port, then process one block.
     void pulse_reset(uint32_t nframes = 256)

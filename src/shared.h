@@ -327,6 +327,7 @@ public:
     float *out_1;
 #endif
     float *state;
+    float *advance;
     float *reset;
     float *undo;
     float *redo;
@@ -340,8 +341,10 @@ public:
     bool resetSet;
     bool initNewLoop;
     int surface_state;       // SURFACE_* -- the value we last advanced to
-    int last_written_state;  // last value *we* wrote to `state`; a differing
-                              // read means an external write (CC, mod-ui, ...)
+                              // (written out to `state` every block as the
+                              // read-only LED/UI feedback port).
+    bool advanceSet;          // edge-tracking for the momentary `advance` port,
+                              // mirroring resetSet/undoSet/redoSet.
 #if NUM_CHANNELS > 1
     float temp_buffer[TEMP_BUFFER_SIZE];
 #endif
@@ -1030,48 +1033,72 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
         plugin->resetSet = false;
     }
 
-    // state: single-CC cycle, plugin-owned (see
-    // docs/multitrack-looper-plan.md in the pi-Stomp repo). Any value read
-    // here that differs from the value we last wrote ourselves is an
-    // external trigger -- a footswitch CC, a mod-ui REST/WS write, or any
-    // other MIDI-learned source; the specific number carries no meaning
-    // beyond "it changed". Advances the 5-state surface cycle by exactly one
-    // step, reusing the original play_pause/record transition idiom
-    // underneath so the STATE_* engine transitions are unchanged.
-    {
-        int state_in = (int) (*(plugin->state) + 0.5f);
-        if (state_in != plugin->last_written_state) {
-            switch (plugin->surface_state) {
-                case SURFACE_EMPTY:
-                    // Arm play+record together -- the same rising-edge
-                    // combination the old two ports required (in this
-                    // order) to reach STATE_TRIG_START.
-                    plugin->pLS->state = STATE_TRIG_START;
-                    plugin->surface_state = SURFACE_RECORDING;
-                    // Sample the take's reference bpm now, so a tempo change
-                    // between arm and the downbeat aborts (the abort check
-                    // runs before this switch, so it would otherwise miss the
-                    // arm block). If transport is invalid (free-run arm),
-                    // the engine enters STATE_RECORD within this same run()
-                    // and the abort check samples on the next valid block.
-                    if (plugin->transport_valid) {
-                        plugin->capture_bpm = plugin->transport_bpm;
-                        plugin->capture_bpm_set = true;
-                    } else {
-                        plugin->capture_bpm_set = false;
-                    }
-                    break;
+    // advance: momentary trigger (rising edge only), identical shape to
+    // reset. Self-clears the port so a footswitch that latches its CC at a
+    // fixed value (rather than bouncing back to 0) doesn't re-fire every
+    // block. One rising edge = exactly one surface-cycle step, full stop --
+    // no echo-comparison dance, no last_written_state. See
+    // docs/state-machine-redesign.md for the full transition table.
+    if (*(plugin->advance) > 0.0 && !plugin->advanceSet) {
+        plugin->advanceSet = true;
+        switch (plugin->surface_state) {
+            case SURFACE_EMPTY:
+                // Arm play+record together -- the same rising-edge
+                // combination the old two ports required (in this
+                // order) to reach STATE_TRIG_START.
+                plugin->pLS->state = STATE_TRIG_START;
+                plugin->surface_state = SURFACE_RECORDING;
+                // Sample the take's reference bpm now, so a tempo change
+                // between arm and the downbeat aborts (the abort check
+                // runs before this switch, so it would otherwise miss the
+                // arm block). If transport is invalid (free-run arm),
+                // the engine enters STATE_RECORD within this same run()
+                // and the abort check samples on the next valid block.
+                if (plugin->transport_valid) {
+                    plugin->capture_bpm = plugin->transport_bpm;
+                    plugin->capture_bpm_set = true;
+                } else {
+                    plugin->capture_bpm_set = false;
+                }
+                break;
 
-                case SURFACE_RECORDING:
-                    if (pLS->state == STATE_TRIG_START
-                            || pLS->state == STATE_TRIG_STOP) {
-                        // Armed (pre-record, waiting for the downbeat) or
-                        // close-pending (recording the tail out to the
-                        // quantized boundary). A tap in either transitional
-                        // state means the user changed their mind: abort the
-                        // take entirely and land on EMPTY, so a single tap
-                        // re-arms a fresh take. (EMPTY is the only surface
-                        // state that transitions back to RECORDING.)
+            case SURFACE_RECORDING:
+                if (pLS->state == STATE_TRIG_START
+                        || pLS->state == STATE_TRIG_STOP) {
+                    // Armed (pre-record, waiting for the downbeat) or
+                    // close-pending (recording the tail out to the
+                    // quantized boundary). A tap in either transitional
+                    // state means the user changed their mind: abort the
+                    // take entirely and land on EMPTY, so a single tap
+                    // re-arms a fresh take. (EMPTY is the only surface
+                    // state that transitions back to RECORDING.)
+                    clearLoopChunks(pLS);
+                    plugin->initNewLoop = false;
+                    plugin->pending_close_length = 0;
+                    plugin->surface_state = SURFACE_EMPTY;
+                    plugin->pLS->state = STATE_OFF;
+                    break;
+                }
+                // pLS->state == STATE_RECORD: the initial take is
+                // capturing. Quantize its length to the nearest whole
+                // measure and land in PLAYBACK. Overdub is engine-supported
+                // but not exposed on the surface cycle (one-footswitch UX
+                // can't distinguish "exit overdub" from "start a second
+                // overdub" -- see CLAUDE.md).
+                if (loop && plugin->transport_valid
+                        && plugin->transport_bpm > 0.0
+                        && plugin->transport_beats_per_bar > 0.0) {
+                    double beat_length_samples = pLS->fSampleRate * 60.0 / plugin->transport_bpm;
+                    double bar_length_samples = beat_length_samples * plugin->transport_beats_per_bar;
+                    double recorded_length = (double) loop->lLoopLength;
+                    double bars = recorded_length / bar_length_samples;
+                    unsigned long rounded_bars = (unsigned long) (bars + 0.5);
+
+                    if (rounded_bars < 1) {
+                        // Under half a measure: treat the tap as "discard"
+                        // (same as a reset during recording). A take that
+                        // rounds to zero bars can't be quantize-locked to
+                        // anything, so drop it and land on EMPTY.
                         clearLoopChunks(pLS);
                         plugin->initNewLoop = false;
                         plugin->pending_close_length = 0;
@@ -1079,102 +1106,84 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                         plugin->pLS->state = STATE_OFF;
                         break;
                     }
-                    // pLS->state == STATE_RECORD: the initial take is
-                    // capturing. Quantize its length to the nearest whole
-                    // measure and land in PLAYBACK. Overdub is engine-supported
-                    // but not exposed on the surface cycle (one-footswitch UX
-                    // can't distinguish "exit overdub" from "start a second
-                    // overdub" -- see CLAUDE.md).
-                    if (loop && plugin->transport_valid
-                            && plugin->transport_bpm > 0.0
-                            && plugin->transport_beats_per_bar > 0.0) {
-                        double beat_length_samples = pLS->fSampleRate * 60.0 / plugin->transport_bpm;
-                        double bar_length_samples = beat_length_samples * plugin->transport_beats_per_bar;
-                        double recorded_length = (double) loop->lLoopLength;
-                        double bars = recorded_length / bar_length_samples;
-                        unsigned long rounded_bars = (unsigned long) (bars + 0.5);
 
-                        if (rounded_bars < 1) {
-                            // Under half a measure: treat the tap as "discard"
-                            // (same as a reset during recording). A take that
-                            // rounds to zero bars can't be quantize-locked to
-                            // anything, so drop it and land on EMPTY.
-                            clearLoopChunks(pLS);
-                            plugin->initNewLoop = false;
-                            plugin->pending_close_length = 0;
-                            plugin->surface_state = SURFACE_EMPTY;
-                            plugin->pLS->state = STATE_OFF;
-                            break;
-                        }
+                    unsigned long new_length =
+                        (unsigned long) (rounded_bars * bar_length_samples + 0.5);
 
-                        unsigned long new_length =
-                            (unsigned long) (rounded_bars * bar_length_samples + 0.5);
-
-                        if (recorded_length >= (double) new_length) {
-                            // Rounding down (released late): the boundary has
-                            // already passed. Close now, truncate the overshoot,
-                            // and keep the playback cursor phase-continuous --
-                            // it sits where a loop that started on the downbeat
-                            // would be right now (fmod), so it stays measure-
-                            // locked to other tracks. No jump, no time-travel.
-                            loop->lLoopLength = new_length;
-                            loop->lCycleLength = new_length;
-                            loop->pLoopStop = loop->pLoopStart + new_length;
-                            loop->dCurrPos = fmod(recorded_length, (double) new_length);
-                            plugin->pending_close_length = 0;
-                            plugin->pLS->state = STATE_PLAY;
-                            plugin->surface_state = SURFACE_PLAYBACK;
-                        } else {
-                            // Rounding up (released early): keep capturing the
-                            // real-audio tail out to the next downbeat (RC-505
-                            // behavior). Enter the explicit close-pending state;
-                            // the surface stays RECORDING until STATE_TRIG_STOP
-                            // reaches the boundary and closes the loop.
-                            plugin->pending_close_length = new_length;
-                            plugin->pLS->state = STATE_TRIG_STOP;
-                            // surface_state stays SURFACE_RECORDING
-                        }
-                    } else {
-                        // Free-run (no valid transport): close now, keep the
-                        // raw recorded length, play from the loop start.
-                        if (loop) {
-                            loop->dCurrPos = 0.0;
-                        }
+                    if (recorded_length >= (double) new_length) {
+                        // Rounding down (released late): the boundary has
+                        // already passed. Close now, truncate the overshoot,
+                        // and keep the playback cursor phase-continuous --
+                        // it sits where a loop that started on the downbeat
+                        // would be right now (fmod), so it stays measure-
+                        // locked to other tracks. No jump, no time-travel.
+                        loop->lLoopLength = new_length;
+                        loop->lCycleLength = new_length;
+                        loop->pLoopStop = loop->pLoopStart + new_length;
+                        loop->dCurrPos = fmod(recorded_length, (double) new_length);
                         plugin->pending_close_length = 0;
                         plugin->pLS->state = STATE_PLAY;
                         plugin->surface_state = SURFACE_PLAYBACK;
+                    } else {
+                        // Rounding up (released early): keep capturing the
+                        // real-audio tail out to the next downbeat (RC-505
+                        // behavior). Enter the explicit close-pending state;
+                        // the surface stays RECORDING until STATE_TRIG_STOP
+                        // reaches the boundary and closes the loop.
+                        plugin->pending_close_length = new_length;
+                        plugin->pLS->state = STATE_TRIG_STOP;
+                        // surface_state stays SURFACE_RECORDING
                     }
-                    break;
-
-                case SURFACE_OVERDUB:
-                    // Safety net only. The state-port cycle never routes a
-                    // tap here, but the constant and the engine's STATE_OVERDUB
-                    // are kept for the day a second footswitch (or a CC)
-                    // reintroduces overdub on the surface. If we ever do land
-                    // here, the next tap takes the user back to playback so
-                    // the cycle stays well-defined.
+                } else {
+                    // Free-run (no valid transport): close now, keep the
+                    // raw recorded length, play from the loop start.
+                    if (loop) {
+                        loop->dCurrPos = 0.0;
+                    }
+                    plugin->pending_close_length = 0;
                     plugin->pLS->state = STATE_PLAY;
                     plugin->surface_state = SURFACE_PLAYBACK;
-                    break;
+                }
+                break;
 
-                case SURFACE_PLAYBACK:
-                    // Stop playback; loop content is retained (headLoopChunk
-                    // untouched), just not read back.
-                    plugin->pLS->state = STATE_OFF;
-                    plugin->surface_state = SURFACE_STOPPED;
-                    break;
+            case SURFACE_OVERDUB:
+                // Safety net only. The state-port cycle never routes a
+                // tap here, but the constant and the engine's STATE_OVERDUB
+                // are kept for the day a second footswitch (or a CC)
+                // reintroduces overdub on the surface. If we ever do land
+                // here, the next tap takes the user back to playback so
+                // the cycle stays well-defined.
+                plugin->pLS->state = STATE_PLAY;
+                plugin->surface_state = SURFACE_PLAYBACK;
+                break;
 
-                case SURFACE_STOPPED:
-                    // Resume playing the same loop, no new layer.
-                    plugin->pLS->state = STATE_PLAY;
-                    plugin->surface_state = SURFACE_PLAYBACK;
-                    break;
-            }
+            case SURFACE_PLAYBACK:
+                // Stop playback; loop content is retained (headLoopChunk
+                // untouched), just not read back.
+                plugin->pLS->state = STATE_OFF;
+                plugin->surface_state = SURFACE_STOPPED;
+                break;
+
+            case SURFACE_STOPPED:
+                // Resume playing the same loop, no new layer.
+                plugin->pLS->state = STATE_PLAY;
+                plugin->surface_state = SURFACE_PLAYBACK;
+                break;
         }
-
-        plugin->last_written_state = plugin->surface_state;
-        *(plugin->state) = (float) plugin->surface_state;
+        // Self-clear the port so a latched CC that the host doesn't reset
+        // still only fires once: the next block sees advance==0 and the
+        // else-if below clears advanceSet, re-arming the edge detector.
+        // (Identical pattern to reset.) pprops:trigger hosts reset the port
+        // to default after firing; the self-clear is belt-and-suspenders.
+        *(plugin->advance) = 0.0f;
+    } else if (*(plugin->advance) == 0.0 && plugin->advanceSet) {
+        plugin->advanceSet = false;
     }
+
+    // state: read-only output now (was bidirectional). The plugin writes the
+    // current surface state every block so mod-host's param echo keeps
+    // footswitch LEDs/UIs in sync; nothing is read from this port.
+    *(plugin->state) = (float) plugin->surface_state;
 
     if (*(plugin->undo) > 0.0 && !plugin->undoSet) {
         if(loop) {
@@ -2190,9 +2199,9 @@ LV2_Handle SooperLooperPlugin::instantiate(const LV2_Descriptor* descriptor, dou
     plugin->undoSet = false;
     plugin->redoSet = false;
     plugin->resetSet = false;
+    plugin->advanceSet = false;
     plugin->initNewLoop = false;
     plugin->surface_state = SURFACE_EMPTY;
-    plugin->last_written_state = SURFACE_EMPTY;
     plugin->pending_close_length = 0;
 
     return (LV2_Handle)plugin;
