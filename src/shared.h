@@ -39,12 +39,13 @@
    #including this file, and the domain headers below all key off those
    preprocessor definitions.
 
-   The decomposition is header-only (Option A in docs/shared-h-split.md):
-   one translation unit per bundle, methods preserved. The eventual end
-   state is Option B (compiled subsystem modules with link-time DAG
-   enforcement); this split is a deliberate stepping stone toward that.
-   See docs/shared-h-split.md for the rationale, the DAG, and the
-   B-compatibility notes.
+   The decomposition is header-only: one translation unit per bundle,
+   methods preserved. The eventual end state is compiled subsystem
+   modules with link-time DAG enforcement; this split is a deliberate
+   stepping stone toward that. Note for that future work: the `static`
+   free functions in memory.h/stretch.h (internal-linkage safety in the
+   one-TU model) must become non-static or move their definitions to
+   .cpp when crossing TU boundaries.
 
    DAG (include order):
      types.h        -- structs, enums, constants, class declaration (root)

@@ -12,8 +12,7 @@ duplicated per bundle — **any change to `loopjefe/src/` (loopjefe.cpp,
 stereo (`NUM_CHANNELS=2`, `*_1` port variants).
 
 `src/shared.h` is now an **umbrella header** that includes six domain
-headers in dependency (DAG) order — see `docs/shared-h-split.md` for the
-rationale and the DAG. The domains:
+headers in dependency (DAG) order. The domains:
 
 | File | Owns |
 |---|---|

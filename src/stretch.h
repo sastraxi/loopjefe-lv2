@@ -1,6 +1,5 @@
 /* stretch.h -- Rubber Band R3 render-cache generation/top-up for the
-   tempo-follow facet (part of shared.h split). See docs/shared-h-split.md
-   and docs/tempo-follow-plan.md.
+   tempo-follow facet. Included by shared.h. See docs/tempo-follow-plan.md.
 
    Copyright (C) 2002 Jesse Chappell <jesse@essej.net>
    GPL — see shared.h header. */

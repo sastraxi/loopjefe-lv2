@@ -85,7 +85,7 @@ static void test_surface_cycle()
     // recording and start playing. (Previously the finalize arm set only
     // surface_state, leaving the engine in STATE_RECORD -- it kept
     // appending and rewrote lLoopLength every block, clobbering the
-    // bar-round. shared.h:1020.)
+    // bar-round (in dsp_run.h's SURFACE_RECORDING advance case).)
     h.tap();
     CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
     CHECK_EQ(h.engine(),  STATE_PLAY);

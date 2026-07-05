@@ -1,6 +1,6 @@
 /* memory.h -- LoopChunk lifecycle: bump-allocator arena, push/pop/clear,
-   undo/redo, fillLoops, beginOverdub/beginReplace, transitionToNext
-   (part of shared.h split). See docs/shared-h-split.md.
+   undo/redo, fillLoops, beginOverdub/beginReplace, transitionToNext.
+   Included by shared.h.
 
    Copyright (C) 2002 Jesse Chappell <jesse@essej.net>
    GPL — see shared.h header. */

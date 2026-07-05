@@ -227,10 +227,11 @@ the phase cursor — not worth it.
 its true musical length `L_true = rounded_bars · beat_length_samples ·
 beats_per_bar` is almost always *fractional* (e.g. 133.333 BPM, 4/4,
 44100 Hz → 79447.6… samples/bar). Record-close rounds once to the nearest
-sample (`new_length = round(…)`, shared.h:1212), so the stored length has
+sample (`new_length = round(…)`, in `dsp_run.h`'s `SURFACE_RECORDING`
+advance case), so the stored length has
 error `e = L_stored − L_true`, `|e| ≤ 0.5 sample`. Playback then free-runs
-its own counter — `dCurrPos += fRate` (shared.h:2048), wrapping when
-`dCurrPos ≥ lLoopLength` (shared.h:2057) — and **never re-anchors to the
+its own counter — `dCurrPos += dTempoRate` (in `dsp_run.h`'s `STATE_PLAY`
+loop), wrapping when `dCurrPos ≥ lLoopLength` — and **never re-anchors to the
 host transport**. So every wrap the loop slips by `e` samples, same sign,
 against the transport grid: a linear, cumulative drift bounded by
 ~0.5 sample/loop. A 2-bar loop at 120 BPM over 8 min (~120 wraps) can slide
@@ -260,11 +261,12 @@ and self-correcting after xruns or transport relocation.
   phase map never depends on a bpm round-trip.)
 
 **`readTimeInfo()` addition.** Subscribe `time:bar` (currently unmapped —
-only `barBeat` is read, shared.h:2337) and compute the transport's absolute
+only `barBeat` is read, in `transport.h`'s `readTimeInfo`) and compute the transport's absolute
 beat position each block:
 `abs_beats = transport_bar · beats_per_bar + transport_bar_beat`.
 This is read fresh every block (same discipline as the existing
-"never integrate a local frame counter" rule, shared.h:406) — the host is
+"never integrate a local frame counter" rule, in `transport.h`'s
+`readTimeInfo` comment) — the host is
 the clock.
 
 **Per-block playback for an anchored chunk** (replaces the free-running
@@ -273,8 +275,8 @@ counter in the `STATE_PLAY` audio loop):
    folded non-negative.
 2. Block-start read position in *recorded-sample space*:
    `read_pos = phase01 · L_stored` (a `double`; **stays in recorded-sample
-   space, so the undo/redo `fmod(dCurrPos + lStartAdj, …)` handoff at
-   shared.h:559,588 is untouched** — `dCurrPos` is just now *seeded* from
+   space, so the undo/redo `fmod(dCurrPos + lStartAdj, …)` handoff
+   (in `memory.h`'s `undoLoop`/`redoLoop`) is untouched** — `dCurrPos` is just now *seeded* from
    the transport instead of integrated).
 3. Within the block, advance per output sample by the nominal increment
    and read with **fractional interpolation** (linear minimum, cubic if
@@ -360,11 +362,11 @@ The existing chunk stack is *mostly* stretch-ready, with three joints:
 
 1. **`dCurrPos` handoff stays valid — no change.** `undoLoop`/`redoLoop`
    pass the cursor via `fmod(loop->dCurrPos + loop->lStartAdj,
-   prevloop->lLoopLength)` (shared.h:536,565). That math is in the
+   prevloop->lLoopLength)` (in `memory.h`'s `undoLoop`/`redoLoop`). That math is in the
    *source chunk's native samples*; stretch only changes how fast we
    walk those samples, not what the cursor points at. The sacred-cursor
-   contract holds unchanged. (`dCurrPos` is already `double`, noted at
-   shared.h:152 as "to support alternative rates easier.")
+   contract holds unchanged. (`dCurrPos` is already `double`, noted in
+   `types.h` as "to support alternative rates easier.")
 
 2. **`recorded_bpm` + stretcher handle live on `LoopChunk`, not
    `SooperLooper`.** Undo swaps which chunk is head, so it swaps which
@@ -380,8 +382,8 @@ The existing chunk stack is *mostly* stretch-ready, with three joints:
    back and never free anything, by design (so redo can restore). But a
    `RubberBandState` is heap-allocated and non-trivially sized. So:
    - The stretcher can't be embedded inline in `LoopChunk` — that would
-     break the `pLoopStart = loop + sizeof(LoopChunk)` arithmetic at
-     shared.h:460,473.
+      break the `pLoopStart = loop + sizeof(LoopChunk)` arithmetic
+      (in `memory.h`'s `pushNewLoopChunk`).
    - It must be a `RubberBandState*` pointer field on the chunk.
    - It must be **kept alive across undo** (don't free on undo, so redo
      restores the warmed state). `undoLoop`/`popHeadLoop` never free
@@ -563,7 +565,7 @@ one stays pre-allocated once, unrelated to cache sizing.
 **What doesn't change.** `dCurrPos` stays in recorded-sample space; the
 cache is a parallel read path, not a re-rendering of the chunk. The
 undo/redo srcloop handoff (`fmod(loop->dCurrPos + loop->lStartAdj,
-prevloop->lLoopLength)` at shared.h:536,565) is untouched — the cursor
+prevloop->lLoopLength)`, in `memory.h`'s `undoLoop`/`redoLoop`) is untouched — the cursor
 walks the recorded-sample space, the cache just serves the audio
 faster when the bpm is stable.
 

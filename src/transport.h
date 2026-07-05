@@ -1,5 +1,5 @@
-/* transport.h -- time:Position atom reading + phase-map helpers
-   (part of shared.h split). See docs/shared-h-split.md.
+/* transport.h -- time:Position atom reading + phase-map helpers.
+   Included by shared.h.
 
    Copyright (C) 2002 Jesse Chappell <jesse@essej.net>
    GPL — see shared.h header. */

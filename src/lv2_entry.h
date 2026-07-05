@@ -1,6 +1,6 @@
 /* lv2_entry.h -- LV2 plugin descriptor, lv2_descriptor() export, and the
    lifecycle methods (instantiate/activate/deactivate/cleanup/
-   extension_data). Part of the shared.h split -- see docs/shared-h-split.md.
+   extension_data). Included by shared.h.
 
    Copyright (C) 2002 Jesse Chappell <jesse@essej.net>
    GPL — see shared.h header. */

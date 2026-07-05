@@ -1,5 +1,4 @@
-/* types.h -- shared engine type definitions (part of shared.h split).
-   See docs/shared-h-split.md for the decomposition rationale.
+/* types.h -- shared engine type definitions. Included by shared.h.
 
    Copyright (C) 2002 Jesse Chappell <jesse@essej.net>
    GPL — see shared.h header. */

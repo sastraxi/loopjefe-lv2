@@ -1,7 +1,6 @@
 /* dsp_run.h -- the per-block audio engine: run() (preamble + state-machine
    handling + DSP switch + final de-interleave/lowpass). The integration
-   point that pulls in all engine subsystems. Part of the shared.h split
-   -- see docs/shared-h-split.md.
+   point that pulls in all engine subsystems. Included by shared.h.
 
    Copyright (C) 2002 Jesse Chappell <jesse@essej.net>
    GPL — see shared.h header. */
