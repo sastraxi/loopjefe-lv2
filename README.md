@@ -44,7 +44,4 @@ recording design.
   under control.
 - undo / redo
 
-Not implemented: reverse, one-shot, multiply, insert, replace, and the
-full RC-505-style configurable Loop Sync / Measure / Quantize / Tempo Sync
-mode matrix. This is a single, hardcoded behavior, not a general-purpose
-looper emulator.
+Not implemented: the full RC-505-style configurable Loop Sync / Measure / Quantize / Tempo Sync mode matrix. This is a single, hardcoded behavior, not a general-purpose looper emulator.

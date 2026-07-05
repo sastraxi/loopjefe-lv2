@@ -101,20 +101,14 @@ LV2_Handle SooperLooperPlugin::instantiate(const LV2_Descriptor* descriptor, dou
    //pLS->lLoopStop = 0;
    //pLS->lCurrPos = 0;
 
-   pLS->state = STATE_PLAY;
+    pLS->state = STATE_PLAY;
 
-   //DBG(fprintf(stderr,"instantiated\n"));
-
-   pLS->pfQuantMode = &pLS->fQuantizeMode;
-   pLS->pfRoundMode = &pLS->fRoundMode;
-   pLS->pfRedoTapMode = &pLS->fRedoTapMode;
-
-   //init lowpass
-    plugin->z1 = 0.0;
-    double frequency = 20.0 / SampleRate;
-    plugin->b1 = exp(-2.0 * M_PI * frequency);
-    plugin->a0 = 1.0 - plugin->b1;
-    plugin->dryVolumeCoef = 0.0;
+    //init lowpass
+     plugin->z1 = 0.0;
+     double frequency = 20.0 / SampleRate;
+     plugin->b1 = exp(-2.0 * M_PI * frequency);
+     plugin->a0 = 1.0 - plugin->b1;
+     plugin->dryVolumeCoef = 0.0;
 
     plugin->undoSet = false;
     plugin->redoSet = false;
@@ -134,31 +128,14 @@ void SooperLooperPlugin::activate(LV2_Handle instance)
   SooperLooperPlugin *plugin = (SooperLooperPlugin *) instance;
 
   SooperLooper *pLS = plugin->pLS;
-  pLS->lLastMultiCtrl = -1;
 
-  pLS->lScratchSamples = 0;
-  pLS->lTapTrigSamples = 0;
   pLS->lRampSamples = 0;
   pLS->bRampDown = 0;
-  pLS->bPreTap = 1; // first tap init
-  pLS->fLastScratchVal = 0.0;
-  pLS->fLastTapCtrl = -1;
   pLS->fCurrRate = 1.0;
-  pLS->fNextCurrRate = 0.0;
-  pLS->fQuantizeMode = 0;
-  pLS->fRoundMode = 0;
-  pLS->bHoldMode = 0;
-  pLS->fRedoTapMode = 1;
-  pLS->bRateCtrlActive = 0;
 
   pLS->state = STATE_PLAY;
 
   clearLoopChunks(pLS);
-
-
-  if (pLS->pfSecsTotal) {
-     *pLS->pfSecsTotal = (LADSPA_Data) SAMPLE_MEMORY;
-  }
 }
 
 /**********************************************************************************************************************************************************/

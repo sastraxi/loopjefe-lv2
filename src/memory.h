@@ -272,8 +272,6 @@ static void fillLoops(SooperLooper *pLS, LoopChunk *mloop, unsigned long lCurrPo
 
 }
 
-static LoopChunk* transitionToNext(SooperLooper *pLS, LoopChunk *loop, int nextstate);
-
 static LoopChunk * beginOverdub(SooperLooper *pLS, LoopChunk *loop)
 {
     LoopChunk * srcloop;
@@ -302,10 +300,7 @@ static LoopChunk * beginOverdub(SooperLooper *pLS, LoopChunk *loop)
         loop->loop_beats = srcloop->loop_beats;
         loop->lStartAdj = 0;
         loop->lEndAdj = 0;
-        pLS->nextState = -1;
 
-        // loop->dOrigFeedback = LIMIT_BETWEEN_0_AND_1(*(pLS->pfFeedback));
-        loop->dOrigFeedback = 1.0;
         if (loop->dCurrPos > 0)
             loop->frontfill = 1;
         else
@@ -338,100 +333,4 @@ static LoopChunk * beginOverdub(SooperLooper *pLS, LoopChunk *loop)
     }
 
     return loop;
-}
-
-static LoopChunk * beginReplace(SooperLooper *pLS, LoopChunk *loop)
-{
-    LoopChunk * srcloop;
-
-    // NOTE: THIS SHOULD BE IDENTICAL TO OVERDUB
-    // make new loop chunk
-    loop = pushNewLoopChunk(pLS, loop->lLoopLength);
-    if (loop)
-    {
-        pLS->state = STATE_REPLACE;
-
-        // always the same length as previous loop
-        loop->srcloop = srcloop = loop->prev;
-        loop->lCycleLength = srcloop->lCycleLength;
-        loop->dOrigFeedback = LIMIT_BETWEEN_0_AND_1(*pLS->pfFeedback);
-
-        loop->lLoopLength = srcloop->lLoopLength;
-        for (unsigned c = 0; c < NUM_CHANNELS; c++)
-            loop->pLoopStop[c] = loop->pLoopStart[c] + loop->lLoopLength;
-        loop->dCurrPos = srcloop->dCurrPos;
-        loop->lStartAdj = 0;
-        loop->lEndAdj = 0;
-        pLS->nextState = -1;
-
-        loop->dOrigFeedback = LIMIT_BETWEEN_0_AND_1(*pLS->pfFeedback);
-
-        if (loop->dCurrPos > 0)
-            loop->frontfill = 1;
-        else
-            loop->frontfill = 0;
-
-
-        loop->backfill = 1;
-        // logically we need to fill in the cycle up to the
-        // srcloop's current position.
-        // we let the  loop itself do this when it gets around to it
-
-
-        if (pLS->fCurrRate < 0) {
-            pLS->fCurrRate = -1.0;
-            // negative rate
-            // need to fill in between these values
-            loop->lMarkL = (unsigned long) loop->dCurrPos + 1;
-            loop->lMarkH = loop->lLoopLength - 1;
-            loop->lMarkEndL = 0;
-            loop->lMarkEndH = (unsigned long) loop->dCurrPos;
-        } else {
-            pLS->fCurrRate = 1.0;
-            loop->lMarkL = 0;
-            loop->lMarkH = (unsigned long) loop->dCurrPos - 1;
-            loop->lMarkEndL = (unsigned long) loop->dCurrPos;
-            loop->lMarkEndH = loop->lLoopLength - 1;
-        }
-
-        //DBG(fprintf(stderr,"Mark at L:%lu  h:%lu\n",loop->lMarkL, loop->lMarkH);
-        //fprintf(stderr,"EndMark at L:%lu  h:%lu\n",loop->lMarkEndL, loop->lMarkEndH);
-        //fprintf(stderr,"Entering REPLACE state: srcloop is %08x\n", (unsigned)srcloop));
-    }
-
-    return loop;
-}
-
-
-static LoopChunk * transitionToNext(SooperLooper *pLS, LoopChunk *loop, int nextstate)
-{
-    LoopChunk * newloop = loop;
-
-    switch(nextstate)
-    {
-        case STATE_PLAY:
-        case STATE_MUTE:
-            // nothing special
-            break;
-
-        case STATE_OVERDUB:
-            newloop = beginOverdub(pLS, loop);
-            break;
-
-        case STATE_REPLACE:
-            newloop = beginReplace(pLS, loop);
-            break;
-    }
-
-    if (nextstate != -1) {
-        //DBG(fprintf(stderr,"Entering state %d from %d\n", nextstate, pLS->state));
-        pLS->state = nextstate;
-
-    }
-    else {
-        //DBG(fprintf(stderr,"Next state is -1?? Why?\n"));
-        pLS->state = STATE_PLAY;
-    }
-
-    return newloop;
 }

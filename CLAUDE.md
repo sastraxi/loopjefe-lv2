@@ -18,7 +18,7 @@ headers in dependency (DAG) order. The domains:
 |---|---|
 | `src/types.h` | `LADSPA_Data`, constants, `STATE_*`/`SURFACE_*` enums, `LoopChunk`, `SooperLooper`, `TimeURIs`, `SooperLooperPlugin` class decl |
 | `src/transport.h` | `readTimeInfo` + phase-map helpers |
-| `src/memory.h` | `LoopChunk` lifecycle: arena, push/pop/clear/undo/redo, `fillLoops`, `beginOverdub`/`beginReplace`, `transitionToNext` |
+| `src/memory.h` | `LoopChunk` lifecycle: arena, push/pop/clear/undo/redo, `fillLoops`, `beginOverdub` |
 | `src/stretch.h` | Rubber Band render cache (tempo-follow) |
 | `src/state_machine.h` | `runControlPorts()` — per-block control-port preamble (tempo-change abort, reset/advance/undo/redo, surface-cycle transitions) |
 | `src/dsp_run.h` | `run()` — prologue + `runControlPorts()` call + DSP switch + tail (the integration point; includes all leaves) |
@@ -107,11 +107,9 @@ over a coincident tap.
 
 ## Engine internals — gotchas before editing state logic
 
-- **Reachable engine states**: `STATE_OFF`, `RECORD_ARM`, `RECORD`,
-  `RECORD_CLOSE`, `PLAY`, `OVERDUB`, `OVERDUB_ARM`, `OVERDUB_CLOSE`.
-  All other `STATE_*` blocks in the `run()` DSP switch (`MULTIPLY`, `INSERT`,
-  `REPLACE`, `DELAY`, `MUTE`, `SCRATCH`, `ONESHOT`) are unreachable —
-  don't trust design-doc line refs into them without re-checking.
+- **Engine states** (the full set — the DSP switch in `run()` covers
+  exactly these): `STATE_OFF`, `RECORD_ARM`, `RECORD`, `RECORD_CLOSE`,
+  `PLAY`, `OVERDUB`, `OVERDUB_ARM`, `OVERDUB_CLOSE`. 
 - **Symmetric arm/capture/close trios.** Record: `RECORD_ARM`/`RECORD`/
   `RECORD_CLOSE`. Overdub: `OVERDUB_ARM`/`OVERDUB`/`OVERDUB_CLOSE`. The
   overdub arm/close states **fall through** to the `STATE_PLAY` / `STATE_OVERDUB`

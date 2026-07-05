@@ -77,20 +77,13 @@ typedef float LADSPA_Data;
 /*****************************************************************************/
 
 #define STATE_OFF           0
-#define STATE_RECORD_ARM   1   // was STATE_RECORD_ARM: record arm, waiting for downbeat
+#define STATE_RECORD_ARM   1   // record arm, waiting for downbeat
 #define STATE_RECORD        2
-#define STATE_RECORD_CLOSE 3   // was STATE_RECORD_CLOSE: record close-pending, capturing tail
+#define STATE_RECORD_CLOSE 3   // record close-pending, capturing tail
 #define STATE_PLAY         4
 #define STATE_OVERDUB       5
 #define STATE_OVERDUB_ARM  6   // overdub arm, waiting for loop wrap (falls through to PLAY audio)
 #define STATE_OVERDUB_CLOSE 7  // overdub close-pending, capturing to wrap (falls through to OVERDUB audio)
-#define STATE_MULTIPLY     8
-#define STATE_INSERT       9
-#define STATE_REPLACE      10
-#define STATE_DELAY        11
-#define STATE_MUTE         12
-#define STATE_SCRATCH      13
-#define STATE_ONESHOT      14
 
 // Externally-visible values for the `state` control port -- a 5-value
 // wrapper cycle implementing the single-footswitch UX described in
@@ -129,11 +122,10 @@ typedef struct _LoopChunk {
     //unsigned long lLoopStop;
     unsigned long lLoopLength;   // frames
 
-    // adjustment needed in the case of multiply/insert
+    // adjustment used by the overdub fill machinery (frontfill/backfill
+    // against the source loop).
     unsigned long lStartAdj;
     unsigned long lEndAdj;
-    unsigned long lInsPos; // used only by INSERT mode
-    unsigned long lRemLen; // used only by INSERT mode
 
     // markers needed for frontfilling and backfilling
     unsigned long lMarkL;
@@ -145,9 +137,7 @@ typedef struct _LoopChunk {
     int frontfill;
     int backfill;
 
-    unsigned long lCycles;
     unsigned long lCycleLength;
-    LADSPA_Data dOrigFeedback;
 
     // current position is double to support alternative rates easier
     double dCurrPos;
@@ -232,117 +222,19 @@ typedef struct {
     /* the current state of the sampler */
     int state;
 
-    int nextState;
-
     bool skipNextPhaseReseed;
-
-    long lLastMultiCtrl;
-
-    // initial location of params
-    LADSPA_Data fQuantizeMode;
-    LADSPA_Data fRoundMode;
-    LADSPA_Data fRedoTapMode;
-
-
-    // used only when in DELAY mode
-    int bHoldMode;
-
-
-    unsigned long lTapTrigSamples;
-
-    LADSPA_Data fLastOverTrig;
-    unsigned long lOverTrigSamples;
 
     unsigned long lRampSamples;
     int bRampDown;
 
+    // Playback rate multiplier (always 1.0 today -- the rate-switch feature
+    // is gone, but fCurrRate remains as the single source for fRate in
+    // run() so the wrap/scratch math reads cleanly).
     LADSPA_Data fCurrRate;
-    LADSPA_Data fNextCurrRate;
-
-    LADSPA_Data fLastScratchVal;
-    unsigned long lScratchSamples;
-    LADSPA_Data fCurrScratchRate;
-    LADSPA_Data fLastRateSwitch;
-    int bRateCtrlActive;
-
-    LADSPA_Data fLastTapCtrl;
-    int bPreTap;
 
     // linked list of loop chunks
     LoopChunk * headLoopChunk;
     LoopChunk * tailLoopChunk;
-
-
-    /* Ports:
-       ------ */
-    LADSPA_Data * pfWet;
-
-    /* Feedback 0 for none, 1 for infinite */
-    LADSPA_Data * pfFeedback;
-
-    /* The rate of loop playback, if RateSwitch is on */
-    LADSPA_Data * pfRate;
-
-    /* The destination position in the loop to scratch to. 0 is the start */
-    /*  and 1.0 is the end of the loop.  Only active if RateSwitch is on */
-    LADSPA_Data * pfScratchPos;
-
-    /* The multicontrol port.  Each value from (0-127) has a
-     * meaning.  This is considered a momentary control, thus
-     * ANY change to a value within the value range is only
-     * noticed at the moment it changes from something different.
-     *  If you want to do two identical values in a row, you must change
-     * the value to something outside our range for a cycle before using
-     * the real value again.
-     */
-    LADSPA_Data * pfMultiCtrl;
-
-    /* This specifies which multiple of ten this plugin responds to
-     * for the multi-control port.  For instance, if 0 is given we respond
-     * to 0-9 on the multi control port, if 1 is given, 10-19.  This allows you
-     * to separately control multiple looper instances with the same footpedal,
-     * for instance.  Range is 0-12.
-     */
-    LADSPA_Data * pfMultiTens;
-
-    /* changes on this control signal with more than TAP_THRESH_SAMP samples
-     * between them (to handle settle time) is treated as a a TAP Delay trigger
-     */
-    LADSPA_Data *pfTapCtrl;
-
-    /* non zero here toggle quantize and round mode
-     *  WARNING: the plugin may set this value internally... cause I want
-     *  it controllable (via mute mode)
-     */
-    LADSPA_Data *pfQuantMode;
-    LADSPA_Data *pfRoundMode;
-
-    /* if non zero, the redo command is treated like a tap trigger */
-    LADSPA_Data *pfRedoTapMode;
-
-    /* Input audio port data location. */
-    LADSPA_Data * pfInput;
-#if NUM_CHANNELS > 1
-    LADSPA_Data * pfInput_1;
-#endif
-
-    /* Output audio port data location. */
-    LADSPA_Data * pfOutput;
-#if NUM_CHANNELS > 1
-    LADSPA_Data * pfOutput_1;
-#endif
-
-
-    /* Control outputs */
-
-    LADSPA_Data * pfStateOut;
-    LADSPA_Data * pfLoopLength;
-    LADSPA_Data * pfLoopPos;
-    LADSPA_Data * pfCycleLength;
-
-    /* how many seconds of loop memory free and total */
-    LADSPA_Data * pfSecsFree;
-    LADSPA_Data * pfSecsTotal;
 
 } SooperLooper;
 
