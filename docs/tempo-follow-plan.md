@@ -84,15 +84,22 @@ the phase cursor — not worth it.
 
 ## Tempo follow (stretch)
 
-**Data model** (`src/shared.h`), per loop:
-- `double recorded_bpm` — 0 = free-run / no anchor.
-- a `RubberBandState` (`NUM_CHANNELS` channels), created lazily, reset per
-  take.
+**Data model** (`src/shared.h`), per **chunk** (not per `SooperLooper`):
+- `double recorded_bpm` on `LoopChunk` — 0 = free-run / no anchor.
+- a `RubberBandState*` pointer on `LoopChunk` (`NUM_CHANNELS` channels),
+  created lazily on first stretched block, reset per take.
+
+  *Why per-chunk, not per-loop.* The undo/redo stack is a stack of
+  *different loops* layered on each other, and each was captured at
+  potentially a different host bpm (base at 120, overdub after a tempo
+  change at 140). Undo swaps which chunk is head — so it swaps which
+  `recorded_bpm` and ratio are in force that block. A single per-loop
+  `recorded_bpm` would apply the wrong ratio to a chunk after undo/redo.
 
 **Per block in `run()`**:
 1. `readTimeInfo()` caches transport (unchanged).
-2. `ratio = transport_bpm / recorded_bpm`; if `|ratio − 1| < EPS` or no
-   anchor → **bypass** (raw buffer read).
+2. `ratio = transport_bpm / headLoopChunk->recorded_bpm`; if
+   `|ratio − 1| < EPS` or no anchor → **bypass** (raw buffer read).
 3. Else drive Rubber Band real-time: `setTimeRatio(ratio)`, feed buffer,
    pull output. Ratio may vary block-to-block (supported).
 
@@ -102,6 +109,110 @@ the phase cursor — not worth it.
 - Overdub write: pull the write pointer back by
   `(stretcher + out_io + in_io)` latency, scaled by ratio (JACK reports
   I/O latency).
+
+### Interaction with undo/redo (`undoLoop`/`redoLoop`)
+
+The existing chunk stack is *mostly* stretch-ready, with three joints:
+
+1. **`dCurrPos` handoff stays valid — no change.** `undoLoop`/`redoLoop`
+   pass the cursor via `fmod(loop->dCurrPos + loop->lStartAdj,
+   prevloop->lLoopLength)` (shared.h:536,565). That math is in the
+   *source chunk's native samples*; stretch only changes how fast we
+   walk those samples, not what the cursor points at. The sacred-cursor
+   contract holds unchanged. (`dCurrPos` is already `double`, noted at
+   shared.h:152 as "to support alternative rates easier.")
+
+2. **`recorded_bpm` + stretcher handle live on `LoopChunk`, not
+   `SooperLooper`.** Undo swaps which chunk is head, so it swaps which
+   ratio is in force that block. Each surviving chunk always plays at a
+   single `recorded_bpm` — the tempo-change-abort design guarantees
+   this (a mid-capture bpm change drops the take/layer rather than
+   leaving a half-captured buffer at a stale bpm; the chunk is never
+   re-stretched to a new bpm after capture).
+
+3. **Stretcher lifetime vs the bump allocator — new destroy paths.**
+   `pushNewLoopChunk` lays raw audio end-to-end in one `pSampleBuf`;
+   `popHeadLoop` (undo) and `clearLoopChunks` just move the head pointer
+   back and never free anything, by design (so redo can restore). But a
+   `RubberBandState` is heap-allocated and non-trivially sized. So:
+   - The stretcher can't be embedded inline in `LoopChunk` — that would
+     break the `pLoopStart = loop + sizeof(LoopChunk)` arithmetic at
+     shared.h:460,473.
+   - It must be a `RubberBandState*` pointer field on the chunk.
+   - It must be **kept alive across undo** (don't free on undo, so redo
+     restores the warmed state) — only freed when the buffer region is
+     actually reclaimed.
+   - Since the bump allocator never reclaims, **stretchers leak unless
+     an explicit free path is added** on the four destroy transitions:
+     `clearLoopChunks` (delete-all / Empty arm / record abort),
+     sub-½-measure discard at record commit, tempo-change abort
+     (Recording family), tempo-change abort (Overdub family). Freeing
+     the stretcher on those paths is a new code path, not in the
+     original plan.
+
+  `undoLoop` itself must **not** free the stretcher — redo restores the
+  chunk and the warmed stretcher state. Only the four destroy paths free.
+
+## Render cache (future)
+
+The realtime stretch above pays the stretch cost every block at a non-unity
+ratio, forever. For the common case (set a new tempo, hold it for 10
+minutes) that re-stretches the same buffer ~26M times for a 4-bar loop. A
+render cache makes the steady-state cheap without changing the v1 design.
+
+**Why a cache works here.** A loop replays the same region every wrap, so a
+rendered side buffer pays off after one full wrap at a stable tempo — wraps
+2+ are pure reads. The realtime stretch path isn't replaced; it's the
+*fill mechanism* for the cache. You can't render a whole loop the moment
+tempo changes (only a block-sized CPU budget per `run()`), so the cache
+fills incrementally as the playhead advances.
+
+**Design — lookup, not debounce.** Each chunk carries:
+- `double cached_bpm` — the raw `transport_bpm` float the cache was
+  rendered at (0 = empty).
+- `LADSPA_Data * pCacheStart` — side buffer, same length as the chunk's
+  native audio.
+- A valid-range marker (how far the playhead has filled so far).
+
+Per block, after computing `ratio`:
+1. If `transport_bpm == cached_bpm` (raw float `==`, **no division** —
+   the key is the bpm, not the ratio, so no float-conversion error) and
+   the playhead is inside the valid range → read raw from the cache.
+2. Else if `transport_bpm != cached_bpm` → invalidate: reset
+   `cached_bpm = transport_bpm`, mark valid-range empty, fall through to
+   realtime stretch. The realtime path writes its output into the cache
+   as it goes, extending the valid range.
+3. Once the playhead wraps past the fill point, the cache is fully
+   populated and subsequent wraps are pure reads.
+
+**Smooth-ramp behavior.** When the host ramps tempo continuously,
+`transport_bpm` changes every block, so the cache is invalidated every
+block and never completes a wrap → behaves like realtime-only. That's
+fine: ramps are transient, and realtime stretch is the slow path you'd
+be on anyway. The cache only pays off when tempo stabilizes — exactly
+the case worth optimizing. No debounce needed; invalidation falls out
+of the key changing.
+
+**Gotcha — the key is the bpm, not the ratio.** Comparing
+`ratio == cached_ratio` after `transport_bpm / recorded_bpm` would break
+on float rounding. Comparing the raw `transport_bpm == cached_bpm` with
+`==` is safe because no arithmetic touches the value between
+`readTimeInfo()` and the comparison.
+
+**Lifetime / memory.** One side buffer per chunk, same lifetime rules
+as the stretcher handle from the undo/redo section above: kept across
+undo (so redo restores a warmed cache), freed on the four destroy
+paths (`clearLoopChunks`, sub-½-measure discard, both tempo-change
+aborts). For a 4-bar loop at 48k that's ~8 s × 4 bytes × NUM_CHANNELS
+per active chunk; on the 2x2 with several stacked layers it adds up,
+which is why this is opt-in future work, not v1.
+
+**What doesn't change.** `dCurrPos` stays in recorded-sample space; the
+cache is a parallel read path, not a re-rendering of the chunk. The
+undo/redo srcloop handoff (`fmod(loop->dCurrPos + loop->lStartAdj,
+prevloop->lLoopLength)` at shared.h:536,565) is untouched — the cursor
+walks the recorded-sample space, the cache just serves the audio
+faster when the bpm is stable.
 
 ## Pre-roll (future)
 
