@@ -158,12 +158,23 @@ static void test_playback_stays_grid_locked()
     h.tap(0);
     CHECK_EQ((long) h.curr_pos(), 24000);
 
-    // Play 100 more blocks. The cursor must equal the absolute position
-    // (120000 recorded + 100000 played) modulo the 96000-sample loop.
-    for (int k = 0; k < 100; k++)
+    // Play 100 more blocks, keeping the transport advancing (a real host
+    // pushes a fresh time:Position every block while rolling -- this
+    // chunk is phase-anchored, so its cursor derives from that transport
+    // rather than free-running). The cursor must equal the absolute
+    // position (120000 recorded + 100000 played) modulo the 96000-sample
+    // loop.
+    for (int k = 0; k < 100; k++) {
+        push_at(h, 120000.0 + (double) (k + 1) * BLK);
         h.run(BLK);
-    long want = (long) fmod(120000.0 + 100.0 * BLK, 96000.0);   // 28000
-    CHECK_EQ((long) h.curr_pos(), want);
+    }
+    // +1 block: the transport pushed before a run() reflects that block's
+    // start; the cursor read after run() reflects one block further.
+    // Sub-sample tolerance, not exact equality: this chunk is phase-
+    // anchored, so its cursor is derived from the transport's float32
+    // barBeat each block, not integrated bit-exact.
+    double want = fmod(120000.0 + 101.0 * BLK, 96000.0);
+    CHECK(fabs(h.curr_pos() - want) < 1.0);
 }
 
 // A second tap while close-pending force-closes: keep the take, zero-fill the

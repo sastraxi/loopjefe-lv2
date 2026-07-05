@@ -161,6 +161,18 @@ typedef struct _LoopChunk {
     // which chunk is head, so it swaps which ratio is in force.
     double recorded_bpm;
 
+    // Phase anchoring (see docs/tempo-follow-plan.md "Phase anchoring
+    // (drift elimination)"). anchor_beat is the host's absolute musical
+    // position (bar*beats_per_bar + bar_beat) at the moment this chunk's
+    // capture closed (where dCurrPos == 0 by definition); loop_beats is
+    // the loop's musical span (rounded_bars * beats_per_bar). Both are
+    // only meaningful when recorded_bpm > 0 -- a free-run take has no
+    // transport to anchor to. Storing loop_beats directly (rather than
+    // re-deriving it from recorded_bpm and the sample length) means the
+    // phase map never depends on a bpm round-trip.
+    double anchor_beat;
+    double loop_beats;
+
     // Heap-allocated Rubber Band R3 state, created lazily on the first
     // block that actually needs to stretch this chunk. Kept alive across
     // undo/redo (so redo restores a warmed stretcher); only freed on the
@@ -193,6 +205,8 @@ typedef struct {
     int state;
 
     int nextState;
+
+    bool skipNextPhaseReseed;
 
     long lLastMultiCtrl;
 
@@ -309,6 +323,7 @@ typedef struct {
 // instantiate() so run() never calls into LV2_URID_Map (not RT-safe).
 typedef struct {
     LV2_URID time_Position;
+    LV2_URID time_bar;
     LV2_URID time_barBeat;
     LV2_URID time_beatsPerBar;
     LV2_URID time_beatsPerMinute;
@@ -378,11 +393,20 @@ public:
     double transport_bpm;
     double transport_beats_per_bar;
     double transport_bar_beat; // fractional beat-within-bar, 0 = downbeat
+    double transport_bar;      // absolute bar count, exact (host sends it as
+                               // an int64 atom -- e.g. mod-host forges
+                               // pos.bar-1 via lv2_atom_forge_long, no
+                               // float precision loss). 0 if never seen.
 
     // Quantized-stop target: while STATE_RECORD_CLOSE is the close-pending state,
     // this holds the loop length (in loop samples) the take will close at on
     // the next downbeat. 0 when no close is pending.
     unsigned long pending_close_length;
+    // Musical span (rounded_bars * beats_per_bar) matching
+    // pending_close_length, set alongside it so STATE_RECORD_CLOSE can
+    // capture the new chunk's loop_beats without re-deriving rounded_bars
+    // from a rounded sample count.
+    double pending_close_beats;
 
     // Tempo-change-mid-capture abort. While the engine is in a capture state
     // (RECORD_ARM/RECORD/RECORD_CLOSE/OVERDUB/OVERDUB_ARM/OVERDUB_CLOSE), the take's bar-quantized length
@@ -417,12 +441,14 @@ void SooperLooperPlugin::readTimeInfo()
 
         const LV2_Atom_Object *obj = (const LV2_Atom_Object*)&ev->body;
 
+        const LV2_Atom *bar = NULL;
         const LV2_Atom *barBeat = NULL;
         const LV2_Atom *beatsPerBar = NULL;
         const LV2_Atom *beatsPerMinute = NULL;
         const LV2_Atom *speed = NULL;
 
         LV2_Atom_Object_Query q[] = {
+            { uris.time_bar,            &bar },
             { uris.time_barBeat,        &barBeat },
             { uris.time_beatsPerBar,    &beatsPerBar },
             { uris.time_beatsPerMinute, &beatsPerMinute },
@@ -431,6 +457,11 @@ void SooperLooperPlugin::readTimeInfo()
         };
         lv2_atom_object_query(obj, q);
 
+        if (bar) {
+            // Standard LV2 time:bar is an atom:Long -- exact, no float
+            // precision loss (mod-host forges pos.bar-1 this way).
+            transport_bar = (double) ((const LV2_Atom_Long*)bar)->body;
+        }
         if (barBeat) {
             transport_bar_beat = ((const LV2_Atom_Float*)barBeat)->body;
         }
@@ -447,6 +478,26 @@ void SooperLooperPlugin::readTimeInfo()
             transport_valid = true;
         }
     }
+}
+
+// Transport's absolute musical position, in beats since session start.
+static inline double phaseMapAbsBeats(double bar, double beats_per_bar, double bar_beat)
+{
+    return bar * beats_per_bar + bar_beat;
+}
+
+// Back-solve anchor_beat so that phase01 holds at abs_beats_now.
+static inline double phaseMapAnchorFor(double abs_beats_now, double phase01, double loop_beats)
+{
+    return abs_beats_now - phase01 * loop_beats;
+}
+
+// Forward-solve phase01 (0..1) from an anchor_beat at abs_beats_now.
+static inline double phaseMapPhase01(double abs_beats_now, double anchor_beat, double loop_beats)
+{
+    double phase01 = fmod(abs_beats_now - anchor_beat, loop_beats) / loop_beats;
+    if (phase01 < 0.0) phase01 += 1.0;
+    return phase01;
 }
 
 
@@ -557,6 +608,7 @@ int undoLoop(SooperLooper *pLS)
         // if the previous was the source of the one we're undoing
         // pass the dCurrPos along, otherwise leave it be.
         prevloop->dCurrPos = fmod(loop->dCurrPos+loop->lStartAdj, prevloop->lLoopLength);
+        pLS->skipNextPhaseReseed = true;
     }
 
     return popHeadLoop(pLS);
@@ -586,6 +638,7 @@ void redoLoop(SooperLooper *pLS)
             // if the next is using us as a source
             // pass the dCurrPos along, otherwise leave it be.
             nextloop->dCurrPos = fmod(loop->dCurrPos+loop->lStartAdj, nextloop->lLoopLength);
+            pLS->skipNextPhaseReseed = true;
         }
 
         pLS->headLoopChunk = nextloop;
@@ -695,6 +748,8 @@ static LoopChunk * beginOverdub(SooperLooper *pLS, LoopChunk *loop)
         // recorded_bpm. See docs/tempo-follow-plan.md "Interaction with
         // undo/redo".
         loop->recorded_bpm = srcloop->recorded_bpm;
+        loop->anchor_beat = srcloop->anchor_beat;
+        loop->loop_beats = srcloop->loop_beats;
         loop->lStartAdj = 0;
         loop->lEndAdj = 0;
         pLS->nextState = -1;
@@ -1230,6 +1285,14 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                         // 0 means free-run / no anchor (stretch bypasses).
                         loop->recorded_bpm = plugin->capture_bpm_set
                             ? plugin->capture_bpm : 0.0;
+                        loop->loop_beats = loop->recorded_bpm > 0.0
+                            ? rounded_bars * plugin->transport_beats_per_bar : 0.0;
+                        loop->anchor_beat = loop->recorded_bpm > 0.0
+                            ? phaseMapAnchorFor(
+                                  phaseMapAbsBeats(plugin->transport_bar,
+                                      plugin->transport_beats_per_bar, plugin->transport_bar_beat),
+                                  loop->dCurrPos / (double) new_length, loop->loop_beats)
+                            : 0.0;
                         plugin->pending_close_length = 0;
                         plugin->pLS->state = STATE_PLAY;
                         plugin->surface_state = SURFACE_PLAYBACK;
@@ -1244,6 +1307,7 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                         // still change before the boundary (which would
                         // abort via the tempo-change check).
                         plugin->pending_close_length = new_length;
+                        plugin->pending_close_beats = rounded_bars * plugin->transport_beats_per_bar;
                         plugin->pLS->state = STATE_RECORD_CLOSE;
                         // surface_state stays SURFACE_RECORDING
                     }
@@ -1255,6 +1319,8 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                         // No transport anchor in free-run -> stretch bypasses
                         // (ratio undefined). recorded_bpm stays 0.
                         loop->recorded_bpm = 0.0;
+                        loop->anchor_beat = 0.0;
+                        loop->loop_beats = 0.0;
                     }
                     plugin->pending_close_length = 0;
                     plugin->pLS->state = STATE_PLAY;
@@ -1542,6 +1608,14 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                             // Sample recorded_bpm at the actual close.
                             loop->recorded_bpm = plugin->capture_bpm_set
                                 ? plugin->capture_bpm : 0.0;
+                            loop->loop_beats = loop->recorded_bpm > 0.0
+                                ? plugin->pending_close_beats : 0.0;
+                            loop->anchor_beat = loop->recorded_bpm > 0.0
+                                ? phaseMapAnchorFor(
+                                      phaseMapAbsBeats(plugin->transport_bar,
+                                          plugin->transport_beats_per_bar, plugin->transport_bar_beat),
+                                      0.0, loop->loop_beats)
+                                : 0.0;
                             pLS->lRampSamples = XFADE_SAMPLES;
                             pLS->state = STATE_PLAY;
                             plugin->surface_state = SURFACE_PLAYBACK;
@@ -1559,6 +1633,11 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                                 loop->dCurrPos = 0.0;
                                 loop->recorded_bpm = plugin->capture_bpm_set
                                     ? plugin->capture_bpm : 0.0;
+                                // Out-of-memory close truncates wherever it
+                                // is -- not a rounded bar count, so there's
+                                // no clean loop_beats to anchor to.
+                                loop->anchor_beat = 0.0;
+                                loop->loop_beats = 0.0;
                                 break;
                             }
 #if NUM_CHANNELS > 1
@@ -1996,6 +2075,39 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
 
                         srcloop = loop->srcloop;
 
+                        bool anchorablePlayState;
+                        switch (pLS->state) {
+                            case STATE_PLAY:
+                                anchorablePlayState = true;
+                                break;
+                            case STATE_OVERDUB_ARM:
+                            case STATE_ONESHOT:
+                            case STATE_SCRATCH:
+                            case STATE_MUTE:
+                            default:
+                                anchorablePlayState = false;
+                                break;
+                        }
+
+                        double dTempoRate = fRate;
+                        if (anchorablePlayState && loop->recorded_bpm > 0.0
+                            && loop->loop_beats > 0.0
+                            && plugin->transport_valid && plugin->transport_rolling
+                            && plugin->transport_bpm > 0.0) {
+                            if (pLS->skipNextPhaseReseed) {
+                                pLS->skipNextPhaseReseed = false;
+                            } else {
+                                double abs_beats = phaseMapAbsBeats(plugin->transport_bar,
+                                    plugin->transport_beats_per_bar, plugin->transport_bar_beat);
+                                double phase01 = phaseMapPhase01(abs_beats, loop->anchor_beat,
+                                    loop->loop_beats);
+                                loop->dCurrPos = phase01 * (double) loop->lLoopLength;
+                            }
+
+                            double ratio = plugin->transport_bpm / loop->recorded_bpm;
+                            dTempoRate = fRate * ratio;
+                        }
+
                         for (;lSampleIndex < SampleCount;
                             lSampleIndex++)
                         {
@@ -2041,11 +2153,18 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
 #else
                                 fInputSample = pfInput[lSampleIndex];
 #endif
-                                fOutputSample =   tmpWet *  *(loop->pLoopStart + lCurrPos)
-                                    + plugin->dryVolumeCoef * fInputSample;
+                                {
+                                    double dFracPos = fmod(loop->dCurrPos, loop->lLoopLength) - lCurrPos;
+                                    unsigned long lNextPos = (lCurrPos + 1 >= loop->lLoopLength) ? 0 : lCurrPos + 1;
+                                    LADSPA_Data fInterpSample =
+                                        *(loop->pLoopStart + lCurrPos) * (1.0 - dFracPos)
+                                        + *(loop->pLoopStart + lNextPos) * dFracPos;
+                                    fOutputSample = tmpWet * fInterpSample
+                                        + plugin->dryVolumeCoef * fInputSample;
+                                }
 
                                 // increment and wrap at the proper loop end
-                                loop->dCurrPos = loop->dCurrPos + fRate;
+                                loop->dCurrPos = loop->dCurrPos + dTempoRate;
 
 #if NUM_CHANNELS > 1
                                 plugin->temp_buffer[interPolIndex++] = fOutputSample;
@@ -2334,6 +2453,7 @@ LV2_Handle SooperLooperPlugin::instantiate(const LV2_Descriptor* descriptor, dou
     }
     if (plugin->urid_map) {
         plugin->uris.time_Position        = plugin->urid_map->map(plugin->urid_map->handle, LV2_TIME__Position);
+        plugin->uris.time_bar             = plugin->urid_map->map(plugin->urid_map->handle, LV2_TIME__bar);
         plugin->uris.time_barBeat         = plugin->urid_map->map(plugin->urid_map->handle, LV2_TIME__barBeat);
         plugin->uris.time_beatsPerBar     = plugin->urid_map->map(plugin->urid_map->handle, LV2_TIME__beatsPerBar);
         plugin->uris.time_beatsPerMinute  = plugin->urid_map->map(plugin->urid_map->handle, LV2_TIME__beatsPerMinute);
@@ -2345,7 +2465,9 @@ LV2_Handle SooperLooperPlugin::instantiate(const LV2_Descriptor* descriptor, dou
     plugin->transport_bpm = 0.0;
     plugin->transport_beats_per_bar = 0.0;
     plugin->transport_bar_beat = 0.0;
+    plugin->transport_bar = 0.0;
     plugin->pending_close_length = 0;
+    plugin->pending_close_beats = 0.0;
     plugin->capture_bpm = 0.0;
     plugin->capture_bpm_set = false;
 

@@ -2,17 +2,61 @@
 
 Two coupled goals:
 1. Recorded loops follow the host transport tempo, pitch-preserved,
-   instead of drifting out of bar-phase when mod-host's tempo changes.
+   instead of drifting out of bar-phase when mod-host's tempo changes —
+   *and* stay bar-locked at constant tempo (integer loop length vs.
+   fractional true bar length otherwise slips ~0.5 sample/loop against
+   the transport; see "Phase anchoring").
 2. The record lifecycle is bar-quantized and phase-locked, so several
    loops stay in sync with each other and the transport.
+
+## Status
+
+The **recording / quantize** half and **phase anchoring** (the
+constant-tempo drift fix) are built and green. Pitch-preserving stretch
+(Rubber Band) is not integrated yet — a stable non-unity ratio currently
+falls back to a plain resample (bar-locked, not pitch-locked).
+
+**Done (✓ in code):**
+- Bar-quantized record lifecycle (downbeat start, round-up/down close,
+  sub-½-measure → Empty) — `test_record_lifecycle.cpp`
+- Tempo-change-mid-capture aborts — `test_tempo_change_aborts.cpp`
+- State-machine redesign, render-cache + undo/redo integration,
+  BPM-aware recording (`recorded_bpm` sampled at close)
+- Length rounding is tight (≤0.5 sample) — correct as far as it goes
+- **Phase anchoring**: `time:bar` (exact int64) + `time:barBeat` (float32,
+  per-block, non-cumulative) drive `anchor_beat`/`loop_beats` on
+  `LoopChunk`, captured at close. `STATE_PLAY` re-seeds `dCurrPos` from
+  the transport every block instead of integrating a counter, for any
+  chunk with `recorded_bpm > 0` — even at matched tempo, where the old
+  free-running counter drifted against a fractional true bar length.
+  `undoLoop`/`redoLoop`'s cursor handoff is preserved for exactly one
+  block via `skip_next_phase_reseed` before the next anchor takes over.
+  `test_phase_anchor.cpp` — green. A stable non-unity ratio also scales
+  the per-sample read rate (`dTempoRate = fRate * ratio`), which keeps
+  bar-lock through a tempo change (`test_tempo_follow.cpp`'s
+  `test_tempo_change_keeps_bar_lock`) but is a resample, not a stretch.
+- Confirmed against mod-host's actual JACK integration
+  (`mod-host/src/effects.c`): `time:bar` is forged via
+  `lv2_atom_forge_long(pos.bar - 1)` (exact, no float loss); `time:barBeat`
+  is `lv2_atom_forge_float(pos.beat - 1 + tick/ticks_per_beat)` (float32,
+  but resent fresh every block while rolling, so its error never
+  accumulates — unlike the free-running counter it replaces).
+
+**Not started (⚑ — all design-only):**
+1. **Rubber Band pitch stretch** — not integrated — `test_tempo_follow.cpp`
+   (`test_pitch_preserved_not_resample`, red by design until this lands)
+2. **Render cache as the stretch bridge** — designed, load-bearing, unbuilt
+3. **Latency compensation** — `test_latency_comp.cpp`
+4. **Overdub audio path** — `test_overdub.cpp`
 
 ## Decisions (locked)
 
 | Area | Decision |
 |---|---|
 | Stretcher | Rubber Band **R3 "Finer", short-window** (`OptionWindowShort`, v3.1+), real-time, baked in (not switchable). GPL — free for us (whole stack is GPL: loopjefe fork + pi-stomp GPL-3.0-or-later). |
-| Reference tempo | Per-loop `recorded_bpm`, captured at close. `ratio = current_bpm / recorded_bpm`. |
-| Bypass | `ratio ≈ 1`, transport invalid, or no anchor → play raw buffer (today's path). |
+| Reference tempo | Per-chunk `recorded_bpm` + `anchor_beat` + `loop_beats`, captured at close. `ratio = current_bpm / recorded_bpm`. |
+| Phase authority | Transport-anchored playback: read phase derived from the host `abs_beats` each block (not an integrated counter), so wraps stay locked to the transport downbeat — no cumulative integer-length drift. Free-run (`recorded_bpm == 0`) keeps the legacy counter. |
+| Bypass | Bypass the **pitch stretch** (not the phase map) when `ratio ≈ 1` / no anchor → fractional-interpolated read at the phase position. Transport invalid → free-run counter (today's path). |
 | Pitch | Preserved (time-stretch, not resample). |
 | Live/dry path | Never stretched — zero added latency there. |
 | Overdub latency comp | Implemented now (even though overdub has no surface path yet). |
@@ -82,6 +126,107 @@ Empty). Seam is crossfade-only: past-boundary samples are ambiguous
 tail-wrap would add a tail buffer + post-close head mutation that perturbs
 the phase cursor — not worth it.
 
+## Phase anchoring (drift elimination)
+
+**The problem.** A loop is stored as an *integer* number of samples, but
+its true musical length `L_true = rounded_bars · beat_length_samples ·
+beats_per_bar` is almost always *fractional* (e.g. 133.333 BPM, 4/4,
+44100 Hz → 79447.6… samples/bar). Record-close rounds once to the nearest
+sample (`new_length = round(…)`, shared.h:1212), so the stored length has
+error `e = L_stored − L_true`, `|e| ≤ 0.5 sample`. Playback then free-runs
+its own counter — `dCurrPos += fRate` (shared.h:2048), wrapping when
+`dCurrPos ≥ lLoopLength` (shared.h:2057) — and **never re-anchors to the
+host transport**. So every wrap the loop slips by `e` samples, same sign,
+against the transport grid: a linear, cumulative drift bounded by
+~0.5 sample/loop. A 2-bar loop at 120 BPM over 8 min (~120 wraps) can slide
+~60 samples ≈ 1.3 ms against a drum machine or other quantize-locked track.
+
+**This is a constant-tempo defect.** It happens when `recorded_bpm ==
+transport_bpm` (`ratio == 1`) — precisely the case the stretch section
+below *bypasses*. Rubber Band only engages when the tempo *changes*, so
+finishing the stretch facet as originally specced does **not** remove this
+drift. The fix is orthogonal to pitch: it's a *phase* problem, so it needs
+a *phase* authority, not a stretcher.
+
+**Root-cause fix — derive the read phase from the transport, don't
+integrate it.** For a transport-anchored take (`recorded_bpm > 0`),
+`dCurrPos` stops being an integrated counter and becomes a value *derived
+each block* from the host's musical position. The loop wrap then coincides
+with the transport downbeat *by construction* — zero cumulative drift,
+and self-correcting after xruns or transport relocation.
+
+**Data model** (per `LoopChunk`, captured at close alongside
+`recorded_bpm`):
+- `double anchor_beat` — the host's absolute musical position (in beats)
+  that maps to loop phase-0. Captured at the close boundary, where phase-0
+  is defined (`dCurrPos = 0`).
+- `double loop_beats = rounded_bars · beats_per_bar` — the loop's musical
+  span. (Store this rather than re-deriving from `recorded_bpm`, so the
+  phase map never depends on a bpm round-trip.)
+
+**`readTimeInfo()` addition.** Subscribe `time:bar` (currently unmapped —
+only `barBeat` is read, shared.h:2337) and compute the transport's absolute
+beat position each block:
+`abs_beats = transport_bar · beats_per_bar + transport_bar_beat`.
+This is read fresh every block (same discipline as the existing
+"never integrate a local frame counter" rule, shared.h:406) — the host is
+the clock.
+
+**Per-block playback for an anchored chunk** (replaces the free-running
+counter in the `STATE_PLAY` audio loop):
+1. `phase01 = fmod(abs_beats − anchor_beat, loop_beats) / loop_beats`,
+   folded non-negative.
+2. Block-start read position in *recorded-sample space*:
+   `read_pos = phase01 · L_stored` (a `double`; **stays in recorded-sample
+   space, so the undo/redo `fmod(dCurrPos + lStartAdj, …)` handoff at
+   shared.h:559,588 is untouched** — `dCurrPos` is just now *seeded* from
+   the transport instead of integrated).
+3. Within the block, advance per output sample by the nominal increment
+   and read with **fractional interpolation** (linear minimum, cubic if
+   the zipper is audible) — the read pointer is fractional now. Re-derive
+   `read_pos` from `abs_beats` at the *top of each block*; integrate only
+   within a block. This bounds error to sub-block and is what actually
+   kills the accumulation (a whole-song counter can't; a per-block
+   re-anchor can).
+
+At matched tempo the per-sample increment is ≈1.0, so interpolation is
+near-identity and introduces no audible artifact — this path alone fully
+resolves the drift the stretch facet can't.
+
+**Free-run takes are unchanged.** When `recorded_bpm == 0` there is no
+transport anchor to lock to, so free-run keeps the legacy integrated
+counter (`dCurrPos += fRate`) exactly as today. Anchoring is strictly a
+`recorded_bpm > 0` code path.
+
+**How this rewrites the stretch section's bypass.** Phase anchoring is the
+*time* authority (which recorded sample the current musical instant maps
+to); Rubber Band is only the *pitch* authority. So the bypass rule flips:
+
+> **bypass the pitch stretch at `ratio ≈ 1`, never the phase correction.**
+
+- **`ratio ≈ 1` (matched tempo):** no pitch work — read the raw buffer via
+  the fractional phase map above. Drift-free, no Rubber Band.
+- **Stable `ratio ≠ 1`:** the phase map still governs *where* we are in
+  musical time; pitch preservation needs Rubber Band, which is a *streaming*
+  API and can't be randomly phase-seeked cheaply. Resolve this by unifying
+  with the **render cache** below: render the chunk once at the target bpm
+  into the side buffer (length `≈ L_true(new bpm)`), then phase-read the
+  cache drift-free, same as the matched-tempo path. The realtime streaming
+  stretch is only the cache *fill* mechanism.
+- **Ramping `ratio`:** cache never completes; fall to streaming Rubber Band
+  (drift is irrelevant across a transient ramp).
+
+This makes the render cache load-bearing, not merely an optimization: it's
+the bridge that lets a phase-authoritative time model coexist with a
+streaming pitch stretcher. (See "Render cache" below.)
+
+**Undo/redo.** `dCurrPos` remains in the source chunk's recorded-sample
+space, so `undoLoop`/`redoLoop`'s `fmod` handoff is valid as-is. Because
+an anchored chunk re-derives `dCurrPos` from its own `anchor_beat` at the
+next block top, the handoff value seeds exactly one block before being
+recomputed against the new head's anchor — correct, since the new head
+carries its own `anchor_beat`/`loop_beats`.
+
 ## Tempo follow (stretch)
 
 **Data model** (`src/shared.h`), per **chunk** (not per `SooperLooper`):
@@ -97,11 +242,15 @@ the phase cursor — not worth it.
   `recorded_bpm` would apply the wrong ratio to a chunk after undo/redo.
 
 **Per block in `run()`**:
-1. `readTimeInfo()` caches transport (unchanged).
-2. `ratio = transport_bpm / headLoopChunk->recorded_bpm`; if
-   `|ratio − 1| < EPS` or no anchor → **bypass** (raw buffer read).
-3. Else drive Rubber Band real-time: `setTimeRatio(ratio)`, feed buffer,
-   pull output. Ratio may vary block-to-block (supported).
+1. `readTimeInfo()` caches transport, including `abs_beats` (see "Phase
+   anchoring" above).
+2. `ratio = transport_bpm / headLoopChunk->recorded_bpm`.
+3. **Time** is always the phase map (`read_pos = phase01 · L_stored`) for
+   an anchored chunk — never bypassed. **Pitch:** if `|ratio − 1| < EPS`
+   or no anchor → bypass the stretcher and read the buffer directly at the
+   fractional phase position. Else preserve pitch via Rubber Band, sourced
+   from the render cache at a stable ratio, or streaming real-time during a
+   ramp (`setTimeRatio(ratio)`, feed, pull; ratio may vary block-to-block).
 
 **Latency compensation** — the engine never switches engines, so
 `getStartDelay()` is a fixed constant:
@@ -248,7 +397,8 @@ per group, self-evident names. ⚑ = fails today (drives the change);
 | File | Cases |
 |---|---|
 | `test_record_lifecycle.cpp` ✓ | start snaps to downbeat; free-run starts immediately; round-up waits for boundary; round-down truncates; sub-½-measure → Empty; phase cursor = `fmod`; playback stays grid-locked; 2nd tap in pending aborts |
-| `test_tempo_follow.cpp` | unity ratio bypasses (bit-identical); no-anchor never stretches; 120→140 keeps bar-lock ⚑; pitch preserved ⚑; `recorded_bpm` captured at close ⚑ |
+| `test_tempo_follow.cpp` | unity ratio bypasses the *pitch stretch* (no Rubber Band engaged) ✓; no-anchor uses the free-run counter ✓; 120→140 keeps bar-lock ✓ (resample, not pitch-preserving); pitch preserved ⚑; `recorded_bpm`/`anchor_beat`/`loop_beats` captured at close ✓ |
+| `test_phase_anchor.cpp` ✓ | **matched-tempo, non-integer bar length** (127.98 BPM, SR 44100, period 1000, tuned so the rounding error sits near its ~0.5-sample worst case): the real-time interval between successive engine wraps matches the true fractional bar length to within 0.25 sample, no cumulative drift over ~50 wraps, checked against an independent oracle (not the engine's own anchor-formula math); free-run take (`recorded_bpm == 0`) still uses the integrated counter. Not yet covered: xrun/transport-relocation recovery, and undo/redo swapping `anchor_beat`/`loop_beats` across chunks. |
 | `test_tempo_change_aborts.cpp` ✓ | bpm change while recording → Empty; while armed → Empty; while close-pending → Empty; unchanged bpm is a no-op; bpm change in playback is a no-op; while overdub armed → Playback; while overdub capturing → Playback; while overdub close-pending → Playback |
 | `test_latency_comp.cpp` | playback read-ahead = stretcher latency ⚑; overdub impulse lands within ±2 samples ⚑ |
 | `test_overdub.cpp` | overdub sums layers ⚑; undo pops layer; inherits source length |

@@ -97,7 +97,7 @@ struct PluginHost {
     std::vector<uint8_t> time_buf;
 
     LV2_Atom_Forge forge;
-    LV2_URID u_Position, u_barBeat, u_beatsPerBar, u_beatsPerMinute, u_speed;
+    LV2_URID u_Position, u_bar, u_barBeat, u_beatsPerBar, u_beatsPerMinute, u_speed;
 
     SooperLooperPlugin *plugin() { return (SooperLooperPlugin *)handle; }
 
@@ -121,6 +121,7 @@ struct PluginHost {
 
         lv2_atom_forge_init(&forge, &map);
         u_Position       = map.map(map.handle, LV2_TIME__Position);
+        u_bar            = map.map(map.handle, LV2_TIME__bar);
         u_barBeat        = map.map(map.handle, LV2_TIME__barBeat);
         u_beatsPerBar    = map.map(map.handle, LV2_TIME__beatsPerBar);
         u_beatsPerMinute = map.map(map.handle, LV2_TIME__beatsPerMinute);
@@ -154,7 +155,7 @@ struct PluginHost {
        than the usual Object/otype pair), so after forging we patch the
        event's atom type to match what the engine actually consumes. */
     void set_transport(double bpm, double beats_per_bar,
-                       double bar_beat, bool rolling)
+                       double bar_beat, bool rolling, long bar = 0)
     {
         lv2_atom_forge_set_buffer(&forge, time_buf.data(), time_buf.size());
         LV2_Atom_Forge_Frame seq_frame;
@@ -162,6 +163,11 @@ struct PluginHost {
         lv2_atom_forge_frame_time(&forge, 0);
         LV2_Atom_Forge_Frame obj_frame;
         lv2_atom_forge_object(&forge, &obj_frame, 0, u_Position);
+        // Matches mod-host: time:bar is an exact atom:Long (pos.bar - 1),
+        // no float precision loss -- see effects.c readTimeInfo research
+        // in docs/tempo-follow-plan.md.
+        lv2_atom_forge_key(&forge, u_bar);
+        lv2_atom_forge_long(&forge, bar);
         lv2_atom_forge_key(&forge, u_barBeat);
         lv2_atom_forge_float(&forge, (float)bar_beat);
         lv2_atom_forge_key(&forge, u_beatsPerBar);
