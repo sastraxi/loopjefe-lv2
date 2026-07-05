@@ -1017,6 +1017,16 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                         loop->lCycleLength = new_length;
                         loop->pLoopStop = loop->pLoopStart + new_length;
                     }
+                    // Stop the take on the engine too. Without this the
+                    // engine stays in STATE_RECORD (which only self-exits on
+                    // out-of-memory) and keeps appending through the
+                    // "Playback" phase, rewriting lLoopLength every block
+                    // (shared.h STATE_RECORD tail) and clobbering the
+                    // bar-round above. Land in PLAY from the loop start.
+                    if (loop) {
+                        loop->dCurrPos = 0.0;
+                    }
+                    plugin->pLS->state = STATE_PLAY;
                     plugin->surface_state = SURFACE_PLAYBACK;
                     break;
 

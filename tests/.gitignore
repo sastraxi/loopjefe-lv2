@@ -1,0 +1,3 @@
+# built test binaries (one per test_*.cpp)
+test_*
+!test_*.cpp

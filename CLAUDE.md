@@ -23,6 +23,12 @@ renaming the directory is the whole rename.
 - `make` — both bundles, at repo root; `make install` (PREFIX=/usr/local)
 - `make MACOS=true` — local compile check on this Mac (lv2-dev via homebrew)
 
+## Tests
+
+- `cd tests && make check` — in-process engine unit tests (no JACK/mod-host;
+  drives `run()` directly via a fake LV2 host). See `tests/README.md` for
+  how the host works and how to add a test. Run after any `shared.h` change.
+
 ## Gotchas — check these before editing state logic
 
 - Engine `SooperLooper::state` has 13 values; only `STATE_OFF`,
