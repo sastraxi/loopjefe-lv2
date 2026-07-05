@@ -364,6 +364,20 @@ public:
     // this holds the loop length (in loop samples) the take will close at on
     // the next downbeat. 0 when no close is pending.
     unsigned long pending_close_length;
+
+    // Tempo-change-mid-capture abort. While the engine is in a capture state
+    // (TRIG_START/RECORD/TRIG_STOP/OVERDUB), the take's bar-quantized length
+    // is being measured against the transport's bar grid. capture_bpm is the
+    // transport bpm sampled on the first valid-transport block of the current
+    // capture; if a later block sees a different bpm, the rounding target is
+    // meaningless (the take would land out of phase with other quantize-
+    // locked tracks), so the take is dropped -- Recording family -> Empty
+    // (mirrors reset), Overdub-with-srcloop -> pop layer -> Playback.
+    // capture_bpm_set is cleared whenever the engine is not capturing, so it
+    // re-samples on the next capture's first block. Free-run (no valid
+    // transport) never trips this.
+    double capture_bpm;
+    bool   capture_bpm_set;
 };
 
 // Walk the time_info atom sequence and cache the latest transport state.
@@ -918,6 +932,54 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
      * LV2 run, reading control ports and setting states
      */
 
+    // Tempo-change-mid-capture abort. While the engine is in a capture state
+    // (TRIG_START armed, RECORD capturing, TRIG_STOP close-pending, or
+    // OVERDUB layering), the take's bar-quantized length is being measured
+    // against the transport's bar grid. capture_bpm samples the transport bpm
+    // on the first valid-transport block of the current capture; if a later
+    // block sees a different bpm, the rounding target is meaningless (the
+    // take would land out of phase with other quantize-locked tracks), so we
+    // drop the take -- Recording family -> Empty (mirrors reset), Overdub-
+    // with-srcloop -> pop the newest layer -> Playback. Free-run (no valid
+    // transport) never trips this, since there's no bar grid to desync from.
+    // Must run before the reset/state-port handling below so an abort takes
+    // precedence over a coincident tap (which would otherwise be interpreted
+    // as a finalize-while-close-pending and try to round a take whose bar
+    // reference just changed).
+    if (plugin->transport_valid
+            && (pLS->state == STATE_TRIG_START
+                || pLS->state == STATE_RECORD
+                || pLS->state == STATE_TRIG_STOP
+                || pLS->state == STATE_OVERDUB)) {
+        if (!plugin->capture_bpm_set) {
+            plugin->capture_bpm = plugin->transport_bpm;
+            plugin->capture_bpm_set = true;
+        } else if (fabs(plugin->transport_bpm - plugin->capture_bpm) > 1e-6) {
+            if (pLS->state == STATE_OVERDUB
+                    && loop != NULL && loop->srcloop != NULL) {
+                undoLoop(pLS);
+                pLS->state = STATE_PLAY;
+                plugin->surface_state = SURFACE_PLAYBACK;
+                plugin->capture_bpm_set = false;
+            } else {
+                clearLoopChunks(pLS);
+                plugin->initNewLoop = false;
+                plugin->pending_close_length = 0;
+                plugin->capture_bpm_set = false;
+                plugin->surface_state = SURFACE_EMPTY;
+                pLS->state = STATE_OFF;
+            }
+            loop = pLS->headLoopChunk;
+        }
+    } else if (pLS->state != STATE_TRIG_START
+               && pLS->state != STATE_RECORD
+               && pLS->state != STATE_TRIG_STOP
+               && pLS->state != STATE_OVERDUB) {
+        // Not capturing: clear so the next capture re-samples on its first
+        // valid-transport block.
+        plugin->capture_bpm_set = false;
+    }
+
     // reset: momentary trigger (rising edge only). Self-clears the port so a
     // footswitch that latches its CC at a fixed value (rather than bouncing
     // back to 0) doesn't re-fire every block.
@@ -986,6 +1048,18 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                     // order) to reach STATE_TRIG_START.
                     plugin->pLS->state = STATE_TRIG_START;
                     plugin->surface_state = SURFACE_RECORDING;
+                    // Sample the take's reference bpm now, so a tempo change
+                    // between arm and the downbeat aborts (the abort check
+                    // runs before this switch, so it would otherwise miss the
+                    // arm block). If transport is invalid (free-run arm),
+                    // the engine enters STATE_RECORD within this same run()
+                    // and the abort check samples on the next valid block.
+                    if (plugin->transport_valid) {
+                        plugin->capture_bpm = plugin->transport_bpm;
+                        plugin->capture_bpm_set = true;
+                    } else {
+                        plugin->capture_bpm_set = false;
+                    }
                     break;
 
                 case SURFACE_RECORDING:
@@ -2065,6 +2139,8 @@ LV2_Handle SooperLooperPlugin::instantiate(const LV2_Descriptor* descriptor, dou
     plugin->transport_beats_per_bar = 0.0;
     plugin->transport_bar_beat = 0.0;
     plugin->pending_close_length = 0;
+    plugin->capture_bpm = 0.0;
+    plugin->capture_bpm_set = false;
 
     SooperLooper * pLS;
     // important note: using calloc to zero all data

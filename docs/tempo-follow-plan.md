@@ -114,6 +114,6 @@ per group, self-evident names. ⚑ = fails today (drives the change);
 |---|---|
 | `test_record_lifecycle.cpp` ✓ | start snaps to downbeat; free-run starts immediately; round-up waits for boundary; round-down truncates; sub-½-measure → Empty; phase cursor = `fmod`; playback stays grid-locked; 2nd tap in pending aborts |
 | `test_tempo_follow.cpp` | unity ratio bypasses (bit-identical); no-anchor never stretches; 120→140 keeps bar-lock ⚑; pitch preserved ⚑; `recorded_bpm` captured at close ⚑ |
-| `test_tempo_change_aborts.cpp` | bpm change while recording → Empty ⚑; while overdub → Playback ⚑; unchanged bpm is a no-op |
+| `test_tempo_change_aborts.cpp` ✓ | bpm change while recording → Empty; while armed → Empty; while close-pending → Empty; unchanged bpm is a no-op; bpm change in playback is a no-op. (Overdub → Playback is implemented in the engine but untested: overdub has no surface path, and `beginOverdub`/`pushNewLoopChunk` are file-scope so the test host can't fabricate `STATE_OVERDUB` with a real srcloop.) |
 | `test_latency_comp.cpp` | playback read-ahead = stretcher latency ⚑; overdub impulse lands within ±2 samples ⚑ |
 | `test_overdub.cpp` | overdub sums layers ⚑; undo pops layer; inherits source length |
