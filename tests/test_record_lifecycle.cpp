@@ -166,19 +166,23 @@ static void test_playback_stays_grid_locked()
     CHECK_EQ((long) h.curr_pos(), want);
 }
 
-// A second tap while close-pending aborts the take back to Empty.
-static void test_second_tap_in_pending_aborts()
+// A second tap while close-pending force-closes: keep the take, zero-fill the
+// unrealized tail to the rounded target, land in Playback. The old "abort to
+// Empty" semantics moved to reset (which always destroys audio); advance now
+// means "I want out now but keep what I have" (RC-505 style).
+static void test_second_tap_in_pending_force_closes()
 {
     PluginHost h(SR);
-    record_blocks(h, 168);               // 1.75 bars -> round up
+    record_blocks(h, 168);               // 1.75 bars -> round up to 2
     push_at(h, 168000);
     h.tap(0);
     CHECK_EQ(h.engine(), STATE_TRIG_STOP);       // close-pending
+    CHECK_EQ(h.loop_length(), 168000);
 
-    h.tap(0);                            // change of mind
-    CHECK_EQ(h.surface(),     SURFACE_EMPTY);
-    CHECK_EQ(h.engine(),      STATE_OFF);
-    CHECK_EQ(h.loop_length(), 0);
+    h.tap(0);                            // force-close now, keep the take
+    CHECK_EQ(h.surface(),     SURFACE_PLAYBACK);
+    CHECK_EQ(h.engine(),      STATE_PLAY);
+    CHECK_EQ(h.loop_length(), 192000);          // rounded target kept
 }
 
 int main()
@@ -190,6 +194,6 @@ int main()
     test_phase_cursor_multi_bar();
     test_sub_half_measure_discards();
     test_playback_stays_grid_locked();
-    test_second_tap_in_pending_aborts();
+    test_second_tap_in_pending_force_closes();
     return test_summary("test_record_lifecycle");
 }

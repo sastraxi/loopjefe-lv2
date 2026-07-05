@@ -211,11 +211,15 @@ struct PluginHost {
     // Old name preserved for test readability; routes through advance now.
     void tap(uint32_t nframes = 256) { pulse_advance(nframes); }
 
-    // Trigger the momentary reset port, then process one block.
+    // Trigger the momentary reset port, then process one block. Clears
+    // resetSet after run() so two consecutive pulse_reset() calls (with no
+    // intervening run) both fire cleanly -- matches the pulse_advance()
+    // ergonomics.
     void pulse_reset(uint32_t nframes = 256)
     {
         reset = 1.0f;
         run(nframes);
+        plugin()->resetSet = false;
     }
 
     /* readouts */
@@ -233,6 +237,13 @@ struct PluginHost {
     {
         LoopChunk *l = plugin()->pLS->headLoopChunk;
         return l ? l->dCurrPos : -1.0;
+    }
+    // Source loop of the head chunk (NULL for an initial record take, set
+    // for an overdub layer). Used to distinguish record vs overdub context.
+    LoopChunk *srcloop()
+    {
+        LoopChunk *l = plugin()->pLS->headLoopChunk;
+        return l ? l->srcloop : NULL;
     }
 };
 

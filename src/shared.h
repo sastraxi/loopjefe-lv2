@@ -345,6 +345,22 @@ public:
                               // read-only LED/UI feedback port).
     bool advanceSet;          // edge-tracking for the momentary `advance` port,
                               // mirroring resetSet/undoSet/redoSet.
+
+    // Overdub arm/close-pending flags. Overdub doesn't reuse STATE_TRIG_START
+    // / STATE_TRIG_STOP (those blocks do dry passthrough / raw capture, which
+    // is wrong for overdub -- the existing loop must keep playing during arm,
+    // and the close keeps summing the layer on top). Instead the engine stays
+    // in STATE_PLAY during arm and STATE_OVERDUB during close, and these flags
+    // signal the wrap-point transitions:
+    //   pending_overdub_arm:   set by reset-from-Playback. In STATE_PLAY, at
+    //     the next loop wrap, beginOverdub fires -> STATE_OVERDUB.
+    //   pending_overdub_close: set by advance-during-OVERDUB (commit). In
+    //     STATE_OVERDUB, at the next loop wrap, close -> STATE_PLAY/
+    //     SURFACE_PLAYBACK. A second advance while this is set force-closes
+    //     now (no wrap wait) -- the escape hatch for a 1-bar layer on an
+    //     8-bar loop (docs/state-machine-redesign.md §4, Q1).
+    bool pending_overdub_arm;
+    bool pending_overdub_close;
 #if NUM_CHANNELS > 1
     float temp_buffer[TEMP_BUFFER_SIZE];
 #endif
@@ -936,35 +952,49 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
      */
 
     // Tempo-change-mid-capture abort. While the engine is in a capture state
-    // (TRIG_START armed, RECORD capturing, TRIG_STOP close-pending, or
-    // OVERDUB layering), the take's bar-quantized length is being measured
-    // against the transport's bar grid. capture_bpm samples the transport bpm
-    // on the first valid-transport block of the current capture; if a later
-    // block sees a different bpm, the rounding target is meaningless (the
-    // take would land out of phase with other quantize-locked tracks), so we
-    // drop the take -- Recording family -> Empty (mirrors reset), Overdub-
-    // with-srcloop -> pop the newest layer -> Playback. Free-run (no valid
-    // transport) never trips this, since there's no bar grid to desync from.
-    // Must run before the reset/state-port handling below so an abort takes
-    // precedence over a coincident tap (which would otherwise be interpreted
-    // as a finalize-while-close-pending and try to round a take whose bar
-    // reference just changed).
+    // (TRIG_START armed, RECORD capturing, TRIG_STOP close-pending, OVERDUB
+    // layering, or overdub-armed via pending_overdub_arm while STATE_PLAY),
+    // the take's bar-quantized length is being measured against the
+    // transport's bar grid. capture_bpm samples the transport bpm on the
+    // first valid-transport block of the current capture; if a later block
+    // sees a different bpm, the rounding target is meaningless (the take
+    // would land out of phase with other quantize-locked tracks), so we
+    // drop the take -- Recording family -> Empty (mirrors reset), Overdub
+    // family -> pop the layer / cancel the arm -> Playback. Free-run (no
+    // valid transport) never trips this, since there's no bar grid to
+    // desync from. Must run before the reset/advance handling below so an
+    // abort takes precedence over a coincident tap (which would otherwise
+    // be interpreted as a finalize-while-close-pending and try to round a
+    // take whose bar reference just changed).
     if (plugin->transport_valid
             && (pLS->state == STATE_TRIG_START
                 || pLS->state == STATE_RECORD
                 || pLS->state == STATE_TRIG_STOP
-                || pLS->state == STATE_OVERDUB)) {
+                || pLS->state == STATE_OVERDUB
+                || (pLS->state == STATE_PLAY && plugin->pending_overdub_arm))) {
         if (!plugin->capture_bpm_set) {
             plugin->capture_bpm = plugin->transport_bpm;
             plugin->capture_bpm_set = true;
         } else if (fabs(plugin->transport_bpm - plugin->capture_bpm) > 1e-6) {
             if (pLS->state == STATE_OVERDUB
                     && loop != NULL && loop->srcloop != NULL) {
+                // Overdub capturing or close-pending: pop the layer, preserve
+                // the playback cursor (undoLoop hands dCurrPos to srcloop).
                 undoLoop(pLS);
                 pLS->state = STATE_PLAY;
                 plugin->surface_state = SURFACE_PLAYBACK;
+                plugin->pending_overdub_close = false;
+                plugin->capture_bpm_set = false;
+            } else if (pLS->state == STATE_PLAY
+                    && plugin->pending_overdub_arm) {
+                // Overdub armed (waiting for the wrap): cancel the arm, no
+                // layer created yet, nothing to destroy. Back to Playback.
+                plugin->pending_overdub_arm = false;
+                plugin->surface_state = SURFACE_PLAYBACK;
                 plugin->capture_bpm_set = false;
             } else {
+                // Recording family (TRIG_START/RECORD/TRIG_STOP): drop the
+                // take entirely, land on Empty.
                 clearLoopChunks(pLS);
                 plugin->initNewLoop = false;
                 plugin->pending_close_length = 0;
@@ -977,7 +1007,8 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
     } else if (pLS->state != STATE_TRIG_START
                && pLS->state != STATE_RECORD
                && pLS->state != STATE_TRIG_STOP
-               && pLS->state != STATE_OVERDUB) {
+               && pLS->state != STATE_OVERDUB
+               && !plugin->pending_overdub_arm) {
         // Not capturing: clear so the next capture re-samples on its first
         // valid-transport block.
         plugin->capture_bpm_set = false;
@@ -987,10 +1018,11 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
     // footswitch that latches its CC at a fixed value (rather than bouncing
     // back to 0) doesn't re-fire every block.
     //
-    // Mode-aware. The key invariant: a committed loop's first sample must
-    // sit on a bar downbeat, otherwise it cannot be quantize-locked to
-    // other tracks. So we never let a "wipe" leave the engine mid-take and
-    // resume recording -- the user can always retry by re-arming.
+    // Means "destroy audio" everywhere EXCEPT the single Playback -> Overdub
+    // arm transition, where reset is repurposed as the *mode trigger* (there's
+    // no other input available to enter overdub). That transition destroys
+    // nothing; every other reset drops the take/layer the engine holds. See
+    // docs/state-machine-redesign.md §4.1 for the full table.
     if (*(plugin->reset) > 0.0 && !plugin->resetSet) {
         plugin->resetSet = true;
         if (plugin->surface_state == SURFACE_RECORDING) {
@@ -1005,24 +1037,50 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
             plugin->surface_state = SURFACE_EMPTY;
             plugin->pLS->state = STATE_OFF;
         }
-        else if (plugin->surface_state == SURFACE_OVERDUB
-                && pLS->headLoopChunk != NULL
-                && pLS->headLoopChunk->srcloop != NULL) {
-            // Overdub in progress: the most-recent chunk is the new layer
-            // being recorded on top of the source loop. Discard just that
-            // layer (undoLoop pops it and hands its dCurrPos to srcloop so
-            // playback continues from the same position -- the *playback
-            // cursor is preserved* as required) and drop back to plain
-            // PLAYBACK. The original loop is untouched, the user can tap
-            // again to start a new overdub layer from the same position.
-            undoLoop(pLS);
+        else if (plugin->surface_state == SURFACE_PLAYBACK
+                && pLS->headLoopChunk != NULL) {
+            // THE special case: reset-as-mode-trigger. There's no take to
+            // destroy (we're playing a committed loop), and there's no other
+            // input available to enter overdub mode. Arm an overdub layer on
+            // the next loop wrap (dCurrPos returns to 0); the engine keeps
+            // playing the existing loop in the meantime -- the audience hears
+            // continuous audio. A second reset cancels the arm (below).
+            plugin->pending_overdub_arm = true;
+            plugin->surface_state = SURFACE_OVERDUB;
+            // Sample capture_bpm now so a tempo change between arm and the
+            // wrap aborts (the abort check runs before this reset block, so
+            // it would otherwise miss the arm block and sample the *new* bpm
+            // on the next block, masking the mismatch). Mirrors the record
+            // arm site in the advance switch.
+            if (plugin->transport_valid) {
+                plugin->capture_bpm = plugin->transport_bpm;
+                plugin->capture_bpm_set = true;
+            } else {
+                plugin->capture_bpm_set = false;
+            }
+        }
+        else if (plugin->surface_state == SURFACE_OVERDUB) {
+            // Overdub in any phase (armed via pending_overdub_arm, capturing
+            // in STATE_OVERDUB, or close-pending via pending_overdub_close):
+            // reset always means drop the layer. undoLoop pops it and hands
+            // its dCurrPos to srcloop so playback continues from the same
+            // position -- the *playback cursor is preserved* (the audience-
+            // facing cursor is sacred, never phase-reset). Land on PLAYBACK;
+            // the user can re-arm a fresh layer from the same position.
+            if (pLS->headLoopChunk != NULL
+                    && pLS->headLoopChunk->srcloop != NULL) {
+                undoLoop(pLS);
+            }
+            plugin->pending_overdub_arm = false;
+            plugin->pending_overdub_close = false;
             plugin->surface_state = SURFACE_PLAYBACK;
             plugin->pLS->state = STATE_PLAY;
         }
         else {
-            // Empty / Playback / Stopped (or Overdub with no srcloop, which
-            // shouldn't happen via the wrapper but guard anyway). Full
-            // wipe back to the original "fresh start" state.
+            // Empty / Stopped: full wipe back to the fresh-start state.
+            // (Empty is a no-op in practice -- nothing to destroy -- but
+            // lands here for safety since the arm transition is handled
+            // above. Stopped drops the retained loop.)
             clearLoopChunks(pLS);
             plugin->initNewLoop = false;
             plugin->surface_state = SURFACE_EMPTY;
@@ -1063,15 +1121,12 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                 break;
 
             case SURFACE_RECORDING:
-                if (pLS->state == STATE_TRIG_START
-                        || pLS->state == STATE_TRIG_STOP) {
-                    // Armed (pre-record, waiting for the downbeat) or
-                    // close-pending (recording the tail out to the
-                    // quantized boundary). A tap in either transitional
-                    // state means the user changed their mind: abort the
-                    // take entirely and land on EMPTY, so a single tap
-                    // re-arms a fresh take. (EMPTY is the only surface
-                    // state that transitions back to RECORDING.)
+                if (pLS->state == STATE_TRIG_START) {
+                    // Armed (pre-record, waiting for the downbeat). A tap
+                    // here means the user changed their mind: abort the take
+                    // entirely and land on EMPTY, so a single tap re-arms a
+                    // fresh take. (EMPTY is the only surface state that
+                    // transitions back to RECORDING.)
                     clearLoopChunks(pLS);
                     plugin->initNewLoop = false;
                     plugin->pending_close_length = 0;
@@ -1079,12 +1134,46 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                     plugin->pLS->state = STATE_OFF;
                     break;
                 }
+                if (pLS->state == STATE_TRIG_STOP) {
+                    // Close-pending (recording the rounded-up tail out to
+                    // the quantized boundary). A second tap = "I want out
+                    // now but keep what I have" (RC-505 style): force-close
+                    // immediately, zero-fill the unrealized tail to the
+                    // rounded target, land in PLAYBACK. The take is kept;
+                    // only the unsung tail is silenced. (Was: abort to
+                    // Empty -- the old "change your mind" semantics moved
+                    // to reset, which always destroys audio.)
+                    if (loop && plugin->pending_close_length > 0) {
+                        unsigned long target = plugin->pending_close_length;
+                        unsigned long filled = (unsigned long) loop->dCurrPos;
+                        if (filled < target) {
+                            for (unsigned long i = filled; i < target; i++) {
+                                *(loop->pLoopStart + i) = 0.0f;
+                            }
+                        }
+                        loop->lLoopLength = target;
+                        loop->lCycleLength = target;
+                        loop->pLoopStop = loop->pLoopStart + target;
+                        loop->dCurrPos = 0.0;
+                        pLS->lRampSamples = XFADE_SAMPLES;
+                        pLS->state = STATE_PLAY;
+                        plugin->surface_state = SURFACE_PLAYBACK;
+                        plugin->pending_close_length = 0;
+                    } else {
+                        // No target (shouldn't happen in TRIG_STOP, but
+                        // guard): close where we are.
+                        if (loop) {
+                            loop->dCurrPos = 0.0;
+                        }
+                        pLS->state = STATE_PLAY;
+                        plugin->surface_state = SURFACE_PLAYBACK;
+                        plugin->pending_close_length = 0;
+                    }
+                    break;
+                }
                 // pLS->state == STATE_RECORD: the initial take is
                 // capturing. Quantize its length to the nearest whole
-                // measure and land in PLAYBACK. Overdub is engine-supported
-                // but not exposed on the surface cycle (one-footswitch UX
-                // can't distinguish "exit overdub" from "start a second
-                // overdub" -- see CLAUDE.md).
+                // measure and land in PLAYBACK.
                 if (loop && plugin->transport_valid
                         && plugin->transport_bpm > 0.0
                         && plugin->transport_beats_per_bar > 0.0) {
@@ -1147,12 +1236,50 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                 break;
 
             case SURFACE_OVERDUB:
-                // Safety net only. The state-port cycle never routes a
-                // tap here, but the constant and the engine's STATE_OVERDUB
-                // are kept for the day a second footswitch (or a CC)
-                // reintroduces overdub on the surface. If we ever do land
-                // here, the next tap takes the user back to playback so
-                // the cycle stays well-defined.
+                // Overdub is now reachable via reset-from-Playback. Three
+                // sub-phases, distinguished by engine state + flags:
+                if (plugin->pending_overdub_arm
+                        && pLS->state == STATE_PLAY) {
+                    // Armed (waiting for the next loop wrap to start the
+                    // layer). advance = "changed my mind": cancel the arm
+                    // and go back to plain Playback. No layer was created
+                    // yet, nothing to destroy -- this is the analog of
+                    // advance-during-TRIG_START for record.
+                    plugin->pending_overdub_arm = false;
+                    plugin->surface_state = SURFACE_PLAYBACK;
+                    // pLS->state stays STATE_PLAY
+                    break;
+                }
+                if (pLS->state == STATE_OVERDUB
+                        && plugin->pending_overdub_close) {
+                    // Close-pending (committed, waiting for the next loop
+                    // wrap to close the layer). A second advance = "I want
+                    // out now but keep the layer" (RC-505 style, the escape
+                    // hatch for a 1-bar layer on an 8-bar loop): force-close
+                    // immediately, no wrap wait. The layer is kept; the
+                    // cursor stays wherever it was (no phase reset -- the
+                    // audience-facing playback cursor is sacred). Land in
+                    // PLAYBACK.
+                    plugin->pending_overdub_close = false;
+                    pLS->state = STATE_PLAY;
+                    plugin->surface_state = SURFACE_PLAYBACK;
+                    break;
+                }
+                if (pLS->state == STATE_OVERDUB) {
+                    // Capturing a layer. advance = commit: quantize the
+                    // close to the next loop wrap (RC-505 stop-quantize).
+                    // Enter close-pending; the surface stays OVERDUB until
+                    // the wrap arrives and closes the layer. A second
+                    // advance force-closes early (above).
+                    plugin->pending_overdub_close = true;
+                    // pLS->state stays STATE_OVERDUB; surface stays OVERDUB
+                    break;
+                }
+                // Fallthrough safety net: if we somehow land in OVERDUB
+                // without a recognized sub-phase, return to Playback so the
+                // cycle stays well-defined.
+                plugin->pending_overdub_arm = false;
+                plugin->pending_overdub_close = false;
                 plugin->pLS->state = STATE_PLAY;
                 plugin->surface_state = SURFACE_PLAYBACK;
                 break;
@@ -1503,6 +1630,20 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                                         pLS->fCurrRate = pLS->fNextCurrRate;
                                         pLS->fNextCurrRate = 0.0;
                                         //DBG(fprintf(stderr, "Starting quantized rate change\n"));
+                                    }
+
+                                    // Overdub close-pending: advance-during-
+                                    // OVERDUB set pending_overdub_close (commit,
+                                    // quantize-to-wrap). At the next loop wrap,
+                                    // close the layer and land in PLAYBACK.
+                                    // The cursor stays at 0 (the wrap point) --
+                                    // no phase reset, the audience hears the
+                                    // loop continue from the same downbeat.
+                                    if (plugin->pending_overdub_close) {
+                                        plugin->pending_overdub_close = false;
+                                        pLS->state = STATE_PLAY;
+                                        plugin->surface_state = SURFACE_PLAYBACK;
+                                        pLS->lRampSamples = XFADE_SAMPLES;
                                     }
                                 }
                             }
@@ -1894,6 +2035,29 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                                         pLS->fNextCurrRate = 0.0;
                                         //DBG(fprintf(stderr, "Starting quantized rate change\n"));
                                     }
+
+                                    // Overdub arm: reset-from-Playback set
+                                    // pending_overdub_arm; at the next loop
+                                    // wrap (dCurrPos returns to 0), start the
+                                    // layer. beginOverdub pushes a new chunk
+                                    // that srcloops this one, copies its
+                                    // dCurrPos (so the playback cursor is
+                                    // preserved -- no phase reset, the
+                                    // audience hears a continuous loop), and
+                                    // sets up frontfill/backfill so the partial
+                                    // first pass is patched from the source.
+                                    if (plugin->pending_overdub_arm) {
+                                        plugin->pending_overdub_arm = false;
+                                        loop = beginOverdub(pLS, loop);
+                                        if (loop) {
+                                            plugin->pending_overdub_close = false;
+                                            // surface_state stays SURFACE_OVERDUB
+                                        } else {
+                                            // out of memory: abort the arm,
+                                            // go back to plain Playback.
+                                            plugin->surface_state = SURFACE_PLAYBACK;
+                                        }
+                                    }
                                 }
                                 else if (loop->dCurrPos < 0)
                                 {
@@ -2203,6 +2367,8 @@ LV2_Handle SooperLooperPlugin::instantiate(const LV2_Descriptor* descriptor, dou
     plugin->initNewLoop = false;
     plugin->surface_state = SURFACE_EMPTY;
     plugin->pending_close_length = 0;
+    plugin->pending_overdub_arm = false;
+    plugin->pending_overdub_close = false;
 
     return (LV2_Handle)plugin;
 }

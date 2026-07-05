@@ -1,12 +1,12 @@
 /* test_tempo_change_aborts.cpp -- a transport bpm change while the engine
-   is in a capture state (TRIG_START armed, RECORD capturing, or TRIG_STOP
-   close-pending) aborts the take to Empty, because the take's bar-quantized
-   length is being measured against a bar grid that just shifted underneath
-   it -- the rounding target is meaningless and the loop would land out of
-   phase with other quantize-locked tracks. Overdub aborts to Playback (pop
-   the newest layer); but overdub has no surface path here, so we exercise
-   only the Recording family. Unchanged bpm is a no-op; a bpm change during
-   plain Playback is also a no-op (abort applies only to capture states).
+   is in a capture state aborts the in-progress take, because the take's bar-
+   quantized length is being measured against a bar grid that just shifted
+   underneath it. The Recording family (TRIG_START armed, RECORD capturing,
+   TRIG_STOP close-pending) aborts to Empty; the Overdub family (armed via
+   pending_overdub_arm, capturing in STATE_OVERDUB, close-pending via
+   pending_overdub_close) aborts to Playback (pop the layer / cancel the arm,
+   preserve the playback cursor). Overdub is now reachable via reset-from-
+   Playback, so its cases are testable end-to-end.
 
    Exercises the capture_bpm / capture_bpm_set fields added to shared.h.
 
@@ -140,6 +140,97 @@ static void test_bpm_change_in_playback_is_noop()
     CHECK_EQ(h.loop_length(), 96000);
 }
 
+// bpm change during overdub arm (pending_overdub_arm, STATE_PLAY): cancel
+// the arm, back to Playback. No layer was created yet, nothing to destroy --
+// the arm was against the old grid.
+static void test_bpm_change_while_overdub_armed_cancels()
+{
+    PluginHost h(SR);
+    record_blocks(h, BPM, 96);                  // 1 bar at 120
+    push_at(h, BPM, 96000.0);
+    h.tap(0);                                    // finalize -> PLAYBACK
+    CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
+
+    push_at(h, BPM, 96000.0);
+    h.pulse_reset();                             // arm overdub
+    CHECK_EQ(h.surface(), SURFACE_OVERDUB);
+    CHECK_EQ(h.engine(),  STATE_PLAY);
+    CHECK(h.plugin()->pending_overdub_arm);
+
+    // Tempo jumps while armed (waiting for the wrap). Cancel the arm.
+    // (Two blocks at the new bpm: the first samples capture_bpm, the second
+    // sees the mismatch and aborts.)
+    push_at(h, 140.0, 97000.0);
+    h.run(BLK);
+    push_at(h, 140.0, 98000.0);
+    h.run(BLK);
+    CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
+    CHECK_EQ(h.engine(),  STATE_PLAY);
+    CHECK(!h.plugin()->pending_overdub_arm);
+}
+
+// bpm change while overdub capturing (STATE_OVERDUB): pop the layer, preserve
+// the playback cursor (undoLoop hands dCurrPos to srcloop), back to Playback.
+static void test_bpm_change_while_overdub_capturing_aborts()
+{
+    PluginHost h(SR);
+    record_blocks(h, BPM, 96);                  // 1 bar at 120
+    push_at(h, BPM, 96000.0);
+    h.tap(0);                                    // -> PLAYBACK
+
+    push_at(h, BPM, 96000.0);
+    h.pulse_reset();                             // arm overdub
+    // Run to the wrap to enter STATE_OVERDUB.
+    for (int k = 0; k < 96; k++) {
+        push_at(h, BPM, (double) (97 + k) * BLK);
+        h.run(BLK);
+    }
+    CHECK_EQ(h.engine(), STATE_OVERDUB);
+    CHECK(h.srcloop() != NULL);
+    double pos_before = h.curr_pos();
+
+    // Tempo jumps mid-capture. Pop the layer, preserve cursor.
+    push_at(h, 140.0, (double) 193 * BLK);
+    h.run(BLK);
+    CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
+    CHECK_EQ(h.engine(),  STATE_PLAY);
+    CHECK(h.srcloop() == NULL);                 // back to source loop
+    // Cursor preserved through undoLoop (fmod(dCurrPos, srcloop->lLoopLength)
+    // is a no-op since overdub inherits source length).
+    CHECK(std::fabs(h.curr_pos() - pos_before) < 2.0 * BLK);
+}
+
+// bpm change while overdub close-pending (pending_overdub_close, STATE_OVERDUB):
+// pop the layer, including the tail captured so far, back to Playback.
+static void test_bpm_change_while_overdub_close_pending_aborts()
+{
+    PluginHost h(SR);
+    record_blocks(h, BPM, 96);                  // 1 bar at 120
+    push_at(h, BPM, 96000.0);
+    h.tap(0);                                    // -> PLAYBACK
+
+    push_at(h, BPM, 96000.0);
+    h.pulse_reset();                             // arm overdub
+    for (int k = 0; k < 96; k++) {               // run to wrap -> OVERDUB
+        push_at(h, BPM, (double) (97 + k) * BLK);
+        h.run(BLK);
+    }
+    for (int k = 0; k < 24; k++) {               // capture 24000 samples
+        push_at(h, BPM, (double) (193 + k) * BLK);
+        h.run(BLK);
+    }
+    h.pulse_advance(0);                          // commit -> close-pending
+    CHECK(h.plugin()->pending_overdub_close);
+
+    // Tempo jumps while close-pending. Pop the layer.
+    push_at(h, 140.0, (double) 217 * BLK);
+    h.run(BLK);
+    CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
+    CHECK_EQ(h.engine(),  STATE_PLAY);
+    CHECK(!h.plugin()->pending_overdub_close);
+    CHECK(h.srcloop() == NULL);
+}
+
 int main()
 {
     test_bpm_change_while_recording_aborts();
@@ -147,5 +238,8 @@ int main()
     test_bpm_change_while_close_pending_aborts();
     test_unchanged_bpm_is_noop();
     test_bpm_change_in_playback_is_noop();
+    test_bpm_change_while_overdub_armed_cancels();
+    test_bpm_change_while_overdub_capturing_aborts();
+    test_bpm_change_while_overdub_close_pending_aborts();
     return test_summary("test_tempo_change_aborts");
 }

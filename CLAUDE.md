@@ -41,12 +41,15 @@ renaming the directory is the whole rename.
 - The wrapper's `surface_state` is the UI-cycle source of truth. Empty
   and Stopped both map to engine `STATE_OFF`; only `surface_state`
   distinguishes them.
-- Overdub is fully implemented in the engine but has **no surface path**:
-  no state-port tap can reach `SURFACE_OVERDUB`. Keep the TTL scalePoint,
-  `SURFACE_OVERDUB` constant, and its switch arm (safety net for stale
-  saves / future second footswitch).
+- Overdub is now reachable via `reset`-from-Playback (the only available
+  trigger for entering overdub mode). It does NOT reuse `STATE_TRIG_START`
+  /`STATE_TRIG_STOP` (those do dry passthrough / raw capture, wrong for
+  overdub). Instead the engine stays in `STATE_PLAY` during arm and
+  `STATE_OVERDUB` during close, with `pending_overdub_arm` /
+  `pending_overdub_close` flags signaling the wrap-point transitions. See
+  `docs/state-machine-redesign.md`.
 - "Stop recording" (bar-rounding the take) fires in the
-  `SURFACE_RECORDING` case of the state-port switch in `run()` — not in
+  `SURFACE_RECORDING` case of the advance switch in `run()` — not in
   any `STATE_TRIG_STOP` block.
 - Known 2x2 quirk: its `STATE_TRIG_START` outer loop steps by
   `NUM_CHANNELS` while indexing inputs by that stepped index
@@ -54,29 +57,44 @@ renaming the directory is the whole rename.
 
 ## Behavior contract — don't regress these
 
-- `state` port (lv2:integer/enumeration; Empty=0 Recording=1 Overdub=2
-  Playback=3 Stopped=4): single-CC 4-state cycle
-  **Empty → Recording → Playback ⇄ Stopped**. Any written value that
-  differs from what the plugin last wrote = external trigger = advance
-  exactly one step. Plugin writes its surface state back every block so
-  mod-host's `param_set` echo keeps footswitch LEDs/UIs in sync.
-- `reset` port (edge-triggered, self-clears to 0) is mode-aware:
+- `state` port (lv2:OutputPort, integer/enumeration; Empty=0 Recording=1
+  Overdub=2 Playback=3 Stopped=4): read-only feedback. The plugin writes
+  its surface state back every block so mod-host's `param_set` echo keeps
+  footswitch LEDs/UIs in sync; nothing is read from this port.
+- `advance` port (lv2:toggled, pprops:trigger, edge-triggered, self-clears
+  to 0): one rising edge = exactly one surface-cycle step. The full
+  transition table is in `docs/state-machine-redesign.md` §4; the key
+  shape: Empty → Recording → Playback ⇄ Stopped, plus a reachable
+  Overdub arm/capture/commit/force-close/abort cycle.
+- `reset` port (edge-triggered, self-clears to 0) means "destroy audio"
+  everywhere EXCEPT the single Playback → Overdub arm transition, where
+  it's repurposed as the *mode trigger* (no other input available to
+  enter overdub). That transition destroys nothing; every other reset
+  drops the take/layer the engine holds:
   - Recording (or still `TRIG_START`): abort the take entirely and land
     on Empty — never wipe-and-keep-recording, which would leave the loop
     permanently out of bar-phase with other quantize-locked tracks.
-  - Overdub: pop the newest overdub chunk, preserve the playback cursor,
-    land on Playback.
-  - Empty/Playback/Stopped: hard reset (`clearLoopChunks`, `STATE_OFF`,
-    Empty).
+  - Overdub (any phase — armed, capturing, close-pending): pop the layer
+    via `undoLoop`, preserve the playback cursor (the audience-facing
+    cursor is sacred, never phase-reset), land on Playback.
+  - Stopped: hard reset (`clearLoopChunks`, `STATE_OFF`, Empty).
+  - Empty: no-op (nothing to destroy).
 - `undo`/`redo` walk the chunk stack independently of `reset`; both force
   engine `STATE_PLAY` and snap surface to Playback (or Empty if drained).
 - Beat sync: `time_info` (atom port, `time:Position`) is read once at the
   top of `run()` and cached — never integrate a local frame counter
   (drift). Record start quantizes to the next downbeat; initial-take stop
-  rounds `lLoopLength` to the nearest whole bar (min 1); overdubs inherit
-  their source loop's length untouched. Free-run (unquantized) fallback
-  whenever transport is invalid/not rolling. Bar quantization is
-  hardcoded — no config ports.
+  rounds `lLoopLength` to the nearest whole bar (min 1; 0 measures →
+  discard to Empty); overdub arm waits for the next loop wrap
+  (`dCurrPos≈0`, not bar downbeat); overdub commit quantizes to the next
+  wrap (RC-505 stop-quantize; second advance force-closes early). Free-run
+  (unquantized) fallback whenever transport is invalid/not rolling. Bar
+  quantization is hardcoded — no config ports.
+- Tempo-change-mid-capture abort: a transport bpm change while in any
+  capture state (`TRIG_START`/`RECORD`/`TRIG_STOP` for record; armed /
+  `STATE_OVERDUB` / close-pending for overdub) drops the take/layer.
+  Recording family → Empty; Overdub family → Playback (pop layer / cancel
+  arm, cursor preserved). Free-run never trips this.
 
 Full design rationale (why bar-not-beat quantization, the abandoned
 overdub mode-parameter design, etc.): pi-Stomp's

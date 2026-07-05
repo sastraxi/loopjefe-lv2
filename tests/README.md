@@ -34,8 +34,9 @@ That's all `lv2_test_host.h` does.
 | `lv2_test_host.h` | `PluginHost` — the in-process host. URID-map stub, all ports wired, a `time:Position` forge helper, and driver/readout methods. |
 | `test_transitions.cpp` | Surface-state cycle + mode-aware reset + a transport-read smoke test. |
 | `test_record_lifecycle.cpp` | Bar-quantized record start/stop, the phase-continuous playback cursor, and the armed/close-pending aborts. |
-| `test_tempo_change_aborts.cpp` | A transport bpm change while in a capture state (TRIG_START/RECORD/TRIG_STOP) aborts the take to Empty; unchanged bpm and bpm-change-in-playback are no-ops. |
+| `test_tempo_change_aborts.cpp` | A transport bpm change while in a capture state (TRIG_START/RECORD/TRIG_STOP for record; armed/STATE_OVERDUB/close-pending for overdub) aborts: Recording family → Empty, Overdub family → Playback (pop layer / cancel arm, cursor preserved). Unchanged bpm and bpm-change-in-playback are no-ops. |
 | `test_state_ports_contract.cpp` | The `state` port is a pure readout (tracks surface, ignores host writes); `advance` is edge-triggered (one press = one step, held doesn't re-fire). |
+| `test_overdub_lifecycle.cpp` | The reachable overdub path: arm from Playback fires at the next loop wrap; advance-during-arm cancels; commit quantizes to wrap; second advance force-closes (keeps layer, no phase reset); reset aborts the layer (cursor preserved). |
 | `Makefile` | Builds each `test_*.cpp` into its own binary. |
 
 Each `test_*.cpp` `#include`s the **bundle** TU (`../loopjefe/src/loopjefe.cpp`),

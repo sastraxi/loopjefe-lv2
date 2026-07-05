@@ -111,18 +111,26 @@ static void test_reset_aborts_recording()
     CHECK(h.reset == 0.0f);          // momentary port self-clears
 }
 
-// reset while stopped/playback is a hard wipe back to EMPTY.
-static void test_reset_wipes_playback()
+// reset from Playback now arms an overdub (the only available trigger for
+// entering overdub mode). Delete-all is two presses: Playback -> advance ->
+// Stopped -> reset -> Empty. The arm fires on the next loop wrap; here we
+// record a long enough loop that the wrap doesn't land within the same block
+// as the reset, so we can observe the armed state (surface OVERDUB, engine
+// still PLAY). The wrap transition itself is exercised in
+// test_overdub_lifecycle.cpp.
+static void test_reset_from_playback_arms_overdub()
 {
     PluginHost h;
-    h.tap();       // arm
-    h.run(256);    // record
-    h.tap();       // -> PLAYBACK
+    h.tap();        // arm
+    h.run(256);     // record block 1
+    h.run(256);     // record block 2 (loop is now 512 samples)
+    h.run(256);     // block 3 (loop is now 768 samples)
+    h.tap();        // finalize -> PLAYBACK (free-run, 768-sample loop)
     CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
 
-    h.pulse_reset();
-    CHECK_EQ(h.surface(), SURFACE_EMPTY);
-    CHECK_EQ(h.engine(),  STATE_OFF);
+    h.pulse_reset();  // arm overdub; 256-sample block < 768-sample loop, no wrap
+    CHECK_EQ(h.surface(), SURFACE_OVERDUB);
+    CHECK_EQ(h.engine(),  STATE_PLAY);          // still playing the loop
 }
 
 // The forge/URID plumbing actually reaches readTimeInfo(): a pushed
@@ -143,7 +151,7 @@ int main()
     trace_cycle();
     test_surface_cycle();
     test_reset_aborts_recording();
-    test_reset_wipes_playback();
+    test_reset_from_playback_arms_overdub();
     test_transport_is_read();
     return test_summary("test_transitions");
 }
