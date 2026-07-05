@@ -11,6 +11,25 @@ duplicated per bundle — **any change to `loopjefe/src/` (loopjefe.cpp,
 *.ttl, modgui) must be mirrored in `loopjefe-2x2/src/`**, adapted for
 stereo (`NUM_CHANNELS=2`, `*_1` port variants).
 
+`src/shared.h` is now an **umbrella header** that includes six domain
+headers in dependency (DAG) order — see `docs/shared-h-split.md` for the
+rationale and the DAG. The domains:
+
+| File | Owns |
+|---|---|
+| `src/types.h` | `LADSPA_Data`, constants, `STATE_*`/`SURFACE_*` enums, `LoopChunk`, `SooperLooper`, `TimeURIs`, `SooperLooperPlugin` class decl |
+| `src/transport.h` | `readTimeInfo` + phase-map helpers |
+| `src/memory.h` | `LoopChunk` lifecycle: arena, push/pop/clear/undo/redo, `fillLoops`, `beginOverdub`/`beginReplace`, `transitionToNext` |
+| `src/stretch.h` | Rubber Band render cache (tempo-follow) |
+| `src/dsp_run.h` | `run()` — preamble + state-machine + DSP switch + tail (the integration point; includes all leaves) |
+| `src/lv2_entry.h` | `Descriptor`, `lv2_descriptor()`, instantiate/activate/deactivate/cleanup/extension_data |
+
+The bundle `.cpp` sets `NUM_CHANNELS` / `TEMP_BUFFER_SIZE` / `PLUGIN_URI` /
+the port enum / `PLUGIN_AUDIO_PORT_COUNT` / `PLUGIN_CONTROL_PORT_COUNT`
+*before* `#include "../../src/shared.h"`; the domain headers all key off
+those preprocessor definitions. Edit any domain header once; both bundles
+recompile against it.
+
 | Dir | URI | Ports |
 |---|---|---|
 | `loopjefe/` | `http://treefallsound.com/plugins/loopjefe` | mono |
