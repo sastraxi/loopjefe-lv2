@@ -1,93 +1,119 @@
-# Tempo-follow (time-stretch) — implementation plan
+# Tempo-follow & bar-synced record lifecycle — plan
 
-Goal: recorded loops follow the host transport tempo, pitch-preserved,
-instead of drifting out of bar-phase when mod-host's tempo changes.
+Two coupled goals:
+1. Recorded loops follow the host transport tempo, pitch-preserved,
+   instead of drifting out of bar-phase when mod-host's tempo changes.
+2. The record lifecycle is bar-quantized and phase-locked, so several
+   loops stay in sync with each other and the transport.
 
 ## Decisions (locked)
 
-- **Stretcher*y*: Rubber Band, **R3 ("Finer") engine in short-window mode**
-  (`OptionWindowShort`, v3.1+), real-time mode. Baked in — not a
-  switchable backend. Short-window keeps R3's analysis at ~R2-level CPU
-  with better quality on sustained material; tradeoff is some
-  percussive/low-end stability vs full R3. GPL build (whole stack is GPL:
-  loopjefe = SooperLooper fork, pi-stomp = GPL-3.0-or-later), so no
-  commercial licence needed.
-- **Reference tempo**: per-loop. Capture transport BPM at record-stop,
-  store on the loop. `ratio = current_bpm / loop.recorded_bpm`.
-- **Pitch**: preserved (time-stretch, not resample).
-- **Bypass**: at `ratio == 1.0` (within epsilon) skip Rubber Band
-  entirely and play raw samples exactly like today. Also bypass when
-  transport invalid/free-run, or when the loop has no `recorded_bpm`
-  (recorded in free-run → no anchor → never stretched).
-- **Live/dry path**: never stretched. Zero added latency there.
-- **Overdub latency comp**: implement now (even though overdub has no
-  surface path yet — ready for the day a 2nd footswitch/CC exposes it).
-- **Tempo change *during* recording**: abort immediately (see below).
+| Area | Decision |
+|---|---|
+| Stretcher | Rubber Band **R3 "Finer", short-window** (`OptionWindowShort`, v3.1+), real-time, baked in (not switchable). GPL — free for us (whole stack is GPL: loopjefe fork + pi-stomp GPL-3.0-or-later). |
+| Reference tempo | Per-loop `recorded_bpm`, captured at close. `ratio = current_bpm / recorded_bpm`. |
+| Bypass | `ratio ≈ 1`, transport invalid, or no anchor → play raw buffer (today's path). |
+| Pitch | Preserved (time-stretch, not resample). |
+| Live/dry path | Never stretched — zero added latency there. |
+| Overdub latency comp | Implemented now (even though overdub has no surface path yet). |
+| Record-stop | Quantize to nearest whole measure; **0 measures → discard to Empty**. |
+| Loop seam | **Crossfade-only** (existing `XFADE_SAMPLES` ramp); no decay-tail wrap. |
+| Pre-roll | Designed here, **not built in v1**. |
 
-## Data model (`src/shared.h`)
+## State model
 
-Add to the per-loop chunk (or `SooperLooperPlugin` beat-grid block):
-- `double recorded_bpm` — BPM captured at record-stop; 0 = free-run/no
-  anchor.
-- Per-loop `RubberBandState` handle (one stretcher instance per active
-  loop; `NUM_CHANNELS` channels). Create lazily, reset on new take.
+Two layers. The **surface** state is the `state`-port / LED contract
+(Empty=0 … Stopped=4) and is unchanged. An explicit **engine** state makes
+every quantize-boundary transition assertable; the LED stays "Recording"
+across the entire capture lifecycle.
 
-At record-stop, alongside the existing bar-rounding of `lLoopLength`,
-store `recorded_bpm = transport_bpm`.
+| Surface (LED) | Engine | Phase | Exit | At bar boundary |
+|---|---|---|---|---|
+| Empty | `OFF` | no loop | tap → arm | — |
+| Recording | `TRIG_START` | pre-record (armed) | auto | begin capture on downbeat |
+| Recording | `RECORD` | capturing | tap → close-pending | — |
+| Recording | `TRIG_STOP` | post-record (closing) | auto | close → Playback |
+| Playback | `PLAY` | playing | tap → stop / reset | — |
+| Stopped | `OFF` | loop held, silent | tap → resume | — |
 
-## Per-block flow in `run()`
+`TRIG_STOP` is currently dead code, repurposed here as the explicit
+close-pending state. Pre/post-**overdub** states are defined but unreached
+(reserved like `SURFACE_OVERDUB`), ready for a future overdub surface path.
 
-1. `readTimeInfo()` already caches `transport_bpm` etc. — unchanged.
-2. For each playing loop, compute `ratio = transport_bpm /
-   recorded_bpm`. If `|ratio - 1| < EPS` or no valid anchor → **bypass**,
-   read buffer straight (current code path).
-3. Else drive the loop's Rubber Band instance in real-time mode:
-   `setTimeRatio(ratio)`, feed loop-buffer samples, pull stretched
-   output. Ratio may change block-to-block (dynamic) — that's supported.
+## Record lifecycle
 
-## Latency compensation
+- **Start** (`TRIG_START`): on arm, wait for the next downbeat, begin
+  capture there. Free-run fallback (invalid transport): start immediately.
+- **Stop** (`TRIG_STOP`): the tap sets close-pending; the close quantizes
+  to the nearest whole measure by current bar-phase `f`:
+  - `f ≥ 0.5` (released early) → keep capturing to the next downbeat and
+    close there — the tail is real audio (RC-505 behavior).
+  - `f < 0.5` (released late) → close now, truncate back to the boundary
+    just passed (drop the overshoot as timing slop).
+  - rounds to **0 measures** → discard the take → Empty.
+  - free-run → close now, length = recorded.
+- **Phase cursor**: `dCurrPos = fmod(recorded_length, new_length)` — the
+  position the loop would be at if it had played continuously since the
+  quantized start. Grid-locked, no jump (round-up lands on 0 naturally).
+- **Abort**: the `reset` port, a tempo change mid-capture, or a second tap
+  during a close-pending window, all while pre-record/record/post-record
+  → drop take → Empty. (Overdub → pop newest layer → Playback.)
 
-- **Playback grid alignment**: read ahead of the transport grid by the
-  stretcher's reported latency (`getStartDelay()` / latency query),
-  constant for R3 short-window at our config (higher than R2 but fixed).
-  One static offset.
-- **Overdub write alignment**: pull the overdub write pointer back by
-  `stretcher_latency + output_io_latency + input_io_latency`, converted
-  to buffer samples via the current ratio. All terms constant & queryable
-  (Rubber Band fixed per config; JACK reports I/O latency). Engine never
-  switches, so the constant never changes at runtime.
+Rounding is nearest-integer measures (`(bars + 0.5)` truncation) — already
+in the code; the only change is the floor (min-1 clamp → 0 aborts to
+Empty). Seam is crossfade-only: past-boundary samples are ambiguous
+(timing slop vs. decay), the engine can't tell them apart, and true
+tail-wrap would add a tail buffer + post-close head mutation that perturbs
+the phase cursor — not worth it.
 
-## Tempo change during recording (abort)
+## Tempo follow (stretch)
 
-While `STATE_TRIG_START` or `STATE_RECORD` (recording) **or**
-`STATE_OVERDUB`: if `transport_bpm` differs from the BPM captured when the
-take/overdub started (beyond EPS), abort — reuse existing reset-abort
-semantics:
-- Recording (or still arming) → drop take, land **Empty**
-  (`SURFACE_EMPTY`, `STATE_OFF`) — same as reset-in-recording.
-- Overdub → pop the in-progress overdub chunk, land **Playback**
-  (`SURFACE_PLAYBACK`, `STATE_PLAY`) — same as reset-in-overdub.
-Capture the "take start BPM" when entering RECORD/OVERDUB. Interim
-policy — revisit if real tempo-ramp support is ever wanted.
+**Data model** (`src/shared.h`), per loop:
+- `double recorded_bpm` — 0 = free-run / no anchor.
+- a `RubberBandState` (`NUM_CHANNELS` channels), created lazily, reset per
+  take.
 
-## Build / linking
+**Per block in `run()`**:
+1. `readTimeInfo()` caches transport (unchanged).
+2. `ratio = transport_bpm / recorded_bpm`; if `|ratio − 1| < EPS` or no
+   anchor → **bypass** (raw buffer read).
+3. Else drive Rubber Band real-time: `setTimeRatio(ratio)`, feed buffer,
+   pull output. Ratio may vary block-to-block (supported).
 
-- `loopjefe/Makefile` + `loopjefe-2x2/Makefile`: add
-  `pkg-config --cflags --libs rubberband` to CXXFLAGS/LDFLAGS.
-  Pi: `librubberband-dev` (apt). MacOS check: `brew install rubberband`
-  (already gated by the `MACOS=true` pkg-config branch).
+**Latency compensation** — the engine never switches engines, so
+`getStartDelay()` is a fixed constant:
+- Playback: read ahead of the grid by the stretcher latency.
+- Overdub write: pull the write pointer back by
+  `(stretcher + out_io + in_io)` latency, scaled by ratio (JACK reports
+  I/O latency).
 
-## Mirroring (CLAUDE.md rule)
+## Pre-roll (future)
 
-Every change to `loopjefe/src/` mirrored into `loopjefe-2x2/src/`,
-adapted for stereo (`NUM_CHANNELS=2`, per-channel Rubber Band).
-`src/shared.h` edited once.
+The quantized start clips anticipated attacks (players rush the beat). A
+small **always-on input ring buffer** lets capture reach back before the
+downbeat. Phase-0 stays the downbeat; the pre-beat audio goes at the
+**loop tail**, so it plays as a pickup just before the wrap. Out of v1
+scope (needs the idle-time ring buffer); designed here so nothing
+precludes it.
 
-## Validation
+## Build & mirroring
 
-- RPi5 bench spike **first**: N Rubber Band R3-short-window streams at a non-unity
-  ratio, measure CPU% / JACK xruns at target buffer size. Gate go/no-go
-  and confirm 4+ loops fit before wiring into `shared.h`.
-- Then: record at 120, change host to 140 → loop stays bar-locked,
-  pitch unchanged. Change tempo mid-record → aborts as specified.
-  Ratio 1.0 → confirm bypass (no added latency, bit-identical to today).
+- Both Makefiles: add `pkg-config --cflags --libs rubberband`. Pi:
+  `librubberband-dev`; macOS check: `brew install rubberband` (already
+  gated by the `MACOS=true` pkg-config branch).
+- `src/shared.h` edited once; every `loopjefe/src/` change mirrored to
+  `loopjefe-2x2/src/` (stereo: `NUM_CHANNELS=2`, per-channel stretcher).
+
+## Tests
+
+In-process via `tests/lv2_test_host.h` (see `tests/README.md`); one file
+per group, self-evident names. ⚑ = fails today (drives the change);
+✓ = implemented and green.
+
+| File | Cases |
+|---|---|
+| `test_record_lifecycle.cpp` ✓ | start snaps to downbeat; free-run starts immediately; round-up waits for boundary; round-down truncates; sub-½-measure → Empty; phase cursor = `fmod`; playback stays grid-locked; 2nd tap in pending aborts |
+| `test_tempo_follow.cpp` | unity ratio bypasses (bit-identical); no-anchor never stretches; 120→140 keeps bar-lock ⚑; pitch preserved ⚑; `recorded_bpm` captured at close ⚑ |
+| `test_tempo_change_aborts.cpp` | bpm change while recording → Empty ⚑; while overdub → Playback ⚑; unchanged bpm is a no-op |
+| `test_latency_comp.cpp` | playback read-ahead = stretcher latency ⚑; overdub impulse lands within ±2 samples ⚑ |
+| `test_overdub.cpp` | overdub sums layers ⚑; undo pops layer; inherits source length |

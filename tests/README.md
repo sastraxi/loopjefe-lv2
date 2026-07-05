@@ -33,6 +33,7 @@ That's all `lv2_test_host.h` does.
 |---|---|
 | `lv2_test_host.h` | `PluginHost` — the in-process host. URID-map stub, all ports wired, a `time:Position` forge helper, and driver/readout methods. |
 | `test_transitions.cpp` | Surface-state cycle + mode-aware reset + a transport-read smoke test. |
+| `test_record_lifecycle.cpp` | Bar-quantized record start/stop, the phase-continuous playback cursor, and the armed/close-pending aborts. |
 | `Makefile` | Builds each `test_*.cpp` into its own binary. |
 
 Each `test_*.cpp` `#include`s the **bundle** TU (`../loopjefe/src/loopjefe.cpp`),
@@ -126,7 +127,18 @@ the intended contract.
 - a pushed `time:Position` actually reaches `readTimeInfo()` (foundation
   for the tempo tests).
 
-Planned next: transport-driven quantize (off-downbeat arm holds
-`TRIG_START`; record start snaps to the bar; stop bar-rounds `lLoopLength`;
-tempo-change-mid-record aborts) and additive overdub (A + overdub B ≈ A+B;
-`undo` pops back to A).
+`test_record_lifecycle.cpp`:
+
+- record start snaps to the next downbeat (`TRIG_START` held off-beat),
+  free-run starts immediately;
+- record stop quantizes to the nearest whole measure — round up keeps
+  recording out to the boundary (`TRIG_STOP` close-pending), round down
+  truncates, under half a measure discards to Empty;
+- the playback cursor lands phase-continuous on the grid (`fmod`) and
+  stays measure-locked as it wraps;
+- a tap while armed or close-pending aborts the take to Empty.
+
+Planned next: tempo-follow stretch (unity-ratio bypass, bar-lock across a
+tempo change, pitch preserved), tempo-change-mid-record abort, latency
+compensation, and additive overdub (A + overdub B ≈ A+B; `undo` pops back
+to A).

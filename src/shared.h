@@ -359,6 +359,11 @@ public:
     double transport_bpm;
     double transport_beats_per_bar;
     double transport_bar_beat; // fractional beat-within-bar, 0 = downbeat
+
+    // Quantized-stop target: while STATE_TRIG_STOP is the close-pending state,
+    // this holds the loop length (in loop samples) the take will close at on
+    // the next downbeat. 0 when no close is pending.
+    unsigned long pending_close_length;
 };
 
 // Walk the time_info atom sequence and cache the latest transport state.
@@ -931,6 +936,7 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
             // a single tap re-arms a fresh take on the next bar boundary.
             clearLoopChunks(pLS);
             plugin->initNewLoop = false;
+            plugin->pending_close_length = 0;
             plugin->surface_state = SURFACE_EMPTY;
             plugin->pLS->state = STATE_OFF;
         }
@@ -983,51 +989,87 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                     break;
 
                 case SURFACE_RECORDING:
-                    if (pLS->state == STATE_TRIG_START) {
-                        // Tap arrived before the bar boundary ever fired.
-                        // Abort the take -- the new chunk hasn't been pushed
-                        // yet, but the user clearly didn't want to commit to
-                        // an empty recording, and "record" in TRIG_START means
-                        // the engine is still arming on the next downbeat.
+                    if (pLS->state == STATE_TRIG_START
+                            || pLS->state == STATE_TRIG_STOP) {
+                        // Armed (pre-record, waiting for the downbeat) or
+                        // close-pending (recording the tail out to the
+                        // quantized boundary). A tap in either transitional
+                        // state means the user changed their mind: abort the
+                        // take entirely and land on EMPTY, so a single tap
+                        // re-arms a fresh take. (EMPTY is the only surface
+                        // state that transitions back to RECORDING.)
                         clearLoopChunks(pLS);
                         plugin->initNewLoop = false;
+                        plugin->pending_close_length = 0;
                         plugin->surface_state = SURFACE_EMPTY;
                         plugin->pLS->state = STATE_OFF;
                         break;
                     }
-                    // Finalize the initial take (bar-round its length --
-                    // identical to the old record-falling-edge branch) and
-                    // land in PLAYBACK. Overdub is engine-supported but not
-                    // exposed on the surface cycle (one-footswitch UX can't
-                    // distinguish "exit overdub" from "start a second overdub"
-                    // -- see CLAUDE.md).
-                    if (loop && pLS->state == STATE_RECORD
-                            && plugin->transport_valid
+                    // pLS->state == STATE_RECORD: the initial take is
+                    // capturing. Quantize its length to the nearest whole
+                    // measure and land in PLAYBACK. Overdub is engine-supported
+                    // but not exposed on the surface cycle (one-footswitch UX
+                    // can't distinguish "exit overdub" from "start a second
+                    // overdub" -- see CLAUDE.md).
+                    if (loop && plugin->transport_valid
                             && plugin->transport_bpm > 0.0
                             && plugin->transport_beats_per_bar > 0.0) {
                         double beat_length_samples = pLS->fSampleRate * 60.0 / plugin->transport_bpm;
                         double bar_length_samples = beat_length_samples * plugin->transport_beats_per_bar;
-                        double bars = loop->lLoopLength / bar_length_samples;
+                        double recorded_length = (double) loop->lLoopLength;
+                        double bars = recorded_length / bar_length_samples;
                         unsigned long rounded_bars = (unsigned long) (bars + 0.5);
+
                         if (rounded_bars < 1) {
-                            rounded_bars = 1;
+                            // Under half a measure: treat the tap as "discard"
+                            // (same as a reset during recording). A take that
+                            // rounds to zero bars can't be quantize-locked to
+                            // anything, so drop it and land on EMPTY.
+                            clearLoopChunks(pLS);
+                            plugin->initNewLoop = false;
+                            plugin->pending_close_length = 0;
+                            plugin->surface_state = SURFACE_EMPTY;
+                            plugin->pLS->state = STATE_OFF;
+                            break;
                         }
-                        unsigned long new_length = (unsigned long) (rounded_bars * bar_length_samples + 0.5);
-                        loop->lLoopLength = new_length;
-                        loop->lCycleLength = new_length;
-                        loop->pLoopStop = loop->pLoopStart + new_length;
+
+                        unsigned long new_length =
+                            (unsigned long) (rounded_bars * bar_length_samples + 0.5);
+
+                        if (recorded_length >= (double) new_length) {
+                            // Rounding down (released late): the boundary has
+                            // already passed. Close now, truncate the overshoot,
+                            // and keep the playback cursor phase-continuous --
+                            // it sits where a loop that started on the downbeat
+                            // would be right now (fmod), so it stays measure-
+                            // locked to other tracks. No jump, no time-travel.
+                            loop->lLoopLength = new_length;
+                            loop->lCycleLength = new_length;
+                            loop->pLoopStop = loop->pLoopStart + new_length;
+                            loop->dCurrPos = fmod(recorded_length, (double) new_length);
+                            plugin->pending_close_length = 0;
+                            plugin->pLS->state = STATE_PLAY;
+                            plugin->surface_state = SURFACE_PLAYBACK;
+                        } else {
+                            // Rounding up (released early): keep capturing the
+                            // real-audio tail out to the next downbeat (RC-505
+                            // behavior). Enter the explicit close-pending state;
+                            // the surface stays RECORDING until STATE_TRIG_STOP
+                            // reaches the boundary and closes the loop.
+                            plugin->pending_close_length = new_length;
+                            plugin->pLS->state = STATE_TRIG_STOP;
+                            // surface_state stays SURFACE_RECORDING
+                        }
+                    } else {
+                        // Free-run (no valid transport): close now, keep the
+                        // raw recorded length, play from the loop start.
+                        if (loop) {
+                            loop->dCurrPos = 0.0;
+                        }
+                        plugin->pending_close_length = 0;
+                        plugin->pLS->state = STATE_PLAY;
+                        plugin->surface_state = SURFACE_PLAYBACK;
                     }
-                    // Stop the take on the engine too. Without this the
-                    // engine stays in STATE_RECORD (which only self-exits on
-                    // out-of-memory) and keeps appending through the
-                    // "Playback" phase, rewriting lLoopLength every block
-                    // (shared.h STATE_RECORD tail) and clobbering the
-                    // bar-round above. Land in PLAY from the loop start.
-                    if (loop) {
-                        loop->dCurrPos = 0.0;
-                    }
-                    plugin->pLS->state = STATE_PLAY;
-                    plugin->surface_state = SURFACE_PLAYBACK;
                     break;
 
                 case SURFACE_OVERDUB:
@@ -1241,52 +1283,50 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
 
             case STATE_TRIG_STOP:
                 {
-                    //fprintf(stderr,"in trigstop\n");
-                    // play the input out.  Keep recording until we go
-                    // above the threshold, then go into next state.
+                    // Close-pending. Repurposed from the dead threshold-based
+                    // legacy TRIG_STOP (see CLAUDE.md): a rounded-up record
+                    // stop keeps capturing the real-audio tail until the take
+                    // reaches its quantized target length, then closes exactly
+                    // on the downbeat (dCurrPos = 0) and lands in PLAY. Channel
+                    // handling mirrors STATE_RECORD.
+                    unsigned long target = plugin->pending_close_length;
 
                     for (;lSampleIndex < SampleCount;
                             lSampleIndex++)
                     {
-                        for (unsigned c = 0; c < NUM_CHANNELS; c++) {
-                            lCurrPos = (unsigned int) loop->dCurrPos;
+                        if (target > 0 && loop->dCurrPos >= (double) target) {
+                            // reached the boundary -- close on the downbeat
+                            loop->lLoopLength = target;
+                            loop->lCycleLength = target;
+                            loop->pLoopStop = loop->pLoopStart + target;
+                            loop->lCycles = 1;
+                            loop->dCurrPos = 0.0;
+                            pLS->lRampSamples = XFADE_SAMPLES;
+                            pLS->state = STATE_PLAY;
+                            plugin->surface_state = SURFACE_PLAYBACK;
+                            plugin->pending_close_length = 0;
+                            break;
+                        }
 
+                        for (unsigned c = 0; c < NUM_CHANNELS; c++) {
+                            lCurrPos = static_cast<unsigned int>(loop->dCurrPos);
+                            if ((char *)(lCurrPos + loop->pLoopStart) >= (pLS->pSampleBuf + pLS->lBufferSize)) {
+                                // out of memory: close where we are, no rounding
+                                pLS->state = STATE_PLAY;
+                                plugin->surface_state = SURFACE_PLAYBACK;
+                                plugin->pending_close_length = 0;
+                                loop->dCurrPos = 0.0;
+                                break;
+                            }
 #if NUM_CHANNELS > 1
                             fInputSample = (c == 0) ? pfInput[lSampleIndex] : pfInput_1[lSampleIndex];
 #else
                             fInputSample = pfInput[lSampleIndex];
 #endif
-
-                            if ( fInputSample > fTrigThresh
-                                    || fTrigThresh == 0.0) {
-                                //DBG(fprintf(stderr,"Entering %d state\n", pLS->nextState));
-                                pLS->state = pLS->nextState;
-                                // reset for audio ramp
-                                pLS->lRampSamples = XFADE_SAMPLES;
-                                loop->pLoopStop = loop->pLoopStart + lCurrPos;
-                                loop->lLoopLength = (unsigned long) (loop->pLoopStop - loop->pLoopStart);
-                                loop->lCycles = 1;
-                                loop->lCycleLength = loop->lLoopLength;
-                                loop->dCurrPos = 0.0;
-                                break;
-                            }
-
                             *(loop->pLoopStart + lCurrPos) = fInputSample;
 
                             // increment according to current rate
                             loop->dCurrPos = loop->dCurrPos + fRate;
-
-
-                            if ((char *)(loop->pLoopStart + (unsigned int)loop->dCurrPos)
-                                    > (pLS->pSampleBuf + pLS->lBufferSize)) {
-                                // out of space! give up for now!
-                                // undo!
-                                pLS->state = STATE_PLAY;
-                                //undoLoop(pLS);
-                                //DBG(fprintf(stderr,"Record Stopped early! Out of memory!\n"));
-                                loop->dCurrPos = 0.0;
-                                break;
-                            }
 
 #if NUM_CHANNELS > 1
                             plugin->temp_buffer[interPolIndex++] = plugin->dryVolumeCoef * fInputSample;
@@ -1294,13 +1334,19 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                             pfOutput[lSampleIndex] = plugin->dryVolumeCoef * fInputSample;
 #endif
                         }
+
+                        if (pLS->state != STATE_TRIG_STOP)
+                            break;   // out-of-memory bail from the channel loop
                     }
 
-                    // update loop values (in case we get stopped by an event)
-                    loop->pLoopStop = loop->pLoopStart + lCurrPos;
-                    loop->lLoopLength = (unsigned long) (loop->pLoopStop - loop->pLoopStart);
-                    loop->lCycleLength = loop->lLoopLength;
-                    loop->lCycles = 1;
+                    // still capturing? keep the running length in sync so an
+                    // event that stops us mid-tail sees the right values.
+                    if (pLS->state == STATE_TRIG_STOP) {
+                        lCurrPos = ((unsigned int)loop->dCurrPos);
+                        loop->pLoopStop = loop->pLoopStart + lCurrPos;
+                        loop->lLoopLength = (unsigned long) (loop->pLoopStop - loop->pLoopStart);
+                        loop->lCycleLength = loop->lLoopLength;
+                    }
 
                 } break;
 
@@ -2018,6 +2064,7 @@ LV2_Handle SooperLooperPlugin::instantiate(const LV2_Descriptor* descriptor, dou
     plugin->transport_bpm = 0.0;
     plugin->transport_beats_per_bar = 0.0;
     plugin->transport_bar_beat = 0.0;
+    plugin->pending_close_length = 0;
 
     SooperLooper * pLS;
     // important note: using calloc to zero all data
@@ -2070,6 +2117,7 @@ LV2_Handle SooperLooperPlugin::instantiate(const LV2_Descriptor* descriptor, dou
     plugin->initNewLoop = false;
     plugin->surface_state = SURFACE_EMPTY;
     plugin->last_written_state = SURFACE_EMPTY;
+    plugin->pending_close_length = 0;
 
     return (LV2_Handle)plugin;
 }

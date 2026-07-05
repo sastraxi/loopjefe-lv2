@@ -217,6 +217,12 @@ struct PluginHost {
         LoopChunk *l = plugin()->pLS->headLoopChunk;
         return l ? l->lLoopLength : 0;
     }
+    // Live play/record cursor of the head chunk, in loop samples.
+    double curr_pos()
+    {
+        LoopChunk *l = plugin()->pLS->headLoopChunk;
+        return l ? l->dCurrPos : -1.0;
+    }
 };
 
 #endif /* LV2_TEST_HOST_H */
