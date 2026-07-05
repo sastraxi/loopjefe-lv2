@@ -74,6 +74,16 @@ typedef float LADSPA_Data;
 
 #define XFADE_SAMPLES 512
 
+// Per-revisit decay applied to existing content on each overdub write
+// (`new = input + OVERDUB_DECAY * feedback * old`). 1.0 = pure additive
+// layering (matches the RC-505's OVERDUB mode -- "ensemble" layering, no
+// automatic decay). This does NOT prevent clipping: it only bounds the
+// geometric-series steady state (at <1.0 it converges; at 1.0 repeated
+// same-level overdubs sum without limit). Use a downstream limiter/
+// compressor/gain stage after loopjefe if levels get hot -- LV2 audio
+// ports carry unbounded floats, so nothing clamps this internally.
+#define OVERDUB_DECAY 1.0
+
 // settle time for tap trigger (trigger if two changes
 // happen within at least X samples)
 //#define TRIG_SETTLE  4410
@@ -742,7 +752,12 @@ static LoopChunk * beginOverdub(SooperLooper *pLS, LoopChunk *loop)
         loop->lCycleLength = srcloop->lCycleLength;
         loop->lLoopLength = srcloop->lLoopLength;
         loop->pLoopStop = loop->pLoopStart + loop->lLoopLength;
-        loop->dCurrPos = srcloop->dCurrPos;
+        // srcloop->dCurrPos may still be the raw wrap-check value (can equal
+        // or exceed lLoopLength -- the caller's fmod re-centering happens
+        // after this returns), so wrap it here before using it to set up
+        // the frontfill/backfill marks below, or the marks are computed
+        // from a bogus out-of-range position.
+        loop->dCurrPos = fmod(srcloop->dCurrPos, loop->lLoopLength);
         // The layer plays at the source loop's reference tempo (it's the
         // same audio, layered on top), so it inherits the source's
         // recorded_bpm. See docs/tempo-follow-plan.md "Interaction with
@@ -1696,14 +1711,20 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
 
                                 fillLoops(pLS, loop, lCurrPos);
 
-                                if (pLS->state == STATE_OVERDUB)
+                                if (pLS->state == STATE_OVERDUB || pLS->state == STATE_OVERDUB_CLOSE)
                                 {
                                     // use our self as the source (we have been filled by the call above)
+                                    // OVERDUB_CLOSE falls through to this same audio path (the layer
+                                    // keeps summing through the close-pending window, see
+                                    // docs/state-machine-redesign.md) -- checking only STATE_OVERDUB
+                                    // here would silently divert the close-pending window into the
+                                    // STATE_REPLACE branch below and overwrite the summed layer with
+                                    // raw (silent) input.
                                     fOutputSample = fWet  *  *(loop->pLoopStart + lCurrPos)
                                         + plugin->dryVolumeCoef * fInputSample;
 
                                     *(loop->pLoopStart + lCurrPos) =
-                                        (fInputSample + 0.95 * fFeedback *  *(loop->pLoopStart + lCurrPos));
+                                        (fInputSample + OVERDUB_DECAY * fFeedback *  *(loop->pLoopStart + lCurrPos));
                                 }
                                 else {
                                     // state REPLACE use only the new input

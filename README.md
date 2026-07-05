@@ -37,7 +37,11 @@ recording design.
 - play/pause (advance to stop, advance to resume)
 - overdub: reset-from-Playback arms a layer on the next loop wrap;
   advance commits (quantize-to-wrap, second advance force-closes early);
-  reset aborts the layer (playback cursor preserved)
+  reset aborts the layer (playback cursor preserved). Layers are pure
+  additive (no automatic decay) — nothing clamps sample values, so
+  repeated overdub passes can go well past 0dBFS. Put a limiter/
+  compressor/gain stage after loopjefe in the chain if you need that
+  under control.
 - undo / redo
 
 Not implemented: reverse, one-shot, multiply, insert, replace, and the

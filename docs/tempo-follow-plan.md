@@ -47,7 +47,39 @@ falls back to a plain resample (bar-locked, not pitch-locked).
    (`test_pitch_preserved_not_resample`, red by design until this lands)
 2. **Render cache as the stretch bridge** — designed, load-bearing, unbuilt
 3. **Latency compensation** — `test_latency_comp.cpp`
-4. **Overdub audio path** — `test_overdub.cpp`
+
+**Done (✓ in code), continued:**
+- **Overdub audio path** — `test_overdub.cpp`: sums layers, undo/redo pops
+  and restores the layer, inherits source length exactly (no rounding).
+  Found and fixed two real bugs while writing this test: (1) `beginOverdub`
+  copied the source loop's raw wrap-check `dCurrPos` (which can equal or
+  exceed `lLoopLength` right at the wrap instant, since the caller's `fmod`
+  re-centering happens *after* `beginOverdub` returns) into the new chunk
+  before computing frontfill/backfill marks off it — an out-of-range
+  position produced backwards mark ranges (`lMarkEndL > lMarkEndH`) that
+  silently prevented backfill from ever completing. Fixed by wrapping with
+  `fmod` before use. (2) The shared `STATE_OVERDUB`/`STATE_OVERDUB_CLOSE`/
+  `STATE_REPLACE` case block gated the sum-vs-overwrite audio formula on
+  `pLS->state == STATE_OVERDUB` only, so the entire `OVERDUB_CLOSE`
+  close-pending window (which is documented to fall through to the same
+  audio path) silently took the `STATE_REPLACE` branch instead — every
+  sample visited during close-pending got overwritten with raw (often
+  silent) input, destroying the summed layer instead of continuing to sum
+  it. Fixed by widening the condition to include `STATE_OVERDUB_CLOSE`.
+
+  Also: the overdub write carried an inherited SooperLooper constant,
+  `new = input + 0.95 * feedback * old`, decaying existing content by a
+  fixed 5% on every revisit regardless of the feedback control. This does
+  **not** prevent clipping (the geometric series still converges to a
+  steady state well above 0dBFS at normal input levels — see the math
+  below), and diverges from the RC-505's OVERDUB "ensemble" mode, which is
+  purely additive with no automatic decay. Replaced the hardcoded `0.95`
+  with a named `OVERDUB_DECAY` constant (shared.h), defaulted to **1.0** —
+  pure additive layering, matching the RC-505. Nothing in the audio path
+  clamps sample values at any decay setting; use a downstream limiter/
+  compressor/gain stage after loopjefe if levels need to stay controlled.
+  LV2 audio ports carry unbounded floats (no enforced -1..1 range), so
+  this plugin can and will output hotter than 0dB if driven that way.
 
 ## Decisions (locked)
 
@@ -401,4 +433,4 @@ per group, self-evident names. ⚑ = fails today (drives the change);
 | `test_phase_anchor.cpp` ✓ | **matched-tempo, non-integer bar length** (127.98 BPM, SR 44100, period 1000, tuned so the rounding error sits near its ~0.5-sample worst case): the real-time interval between successive engine wraps matches the true fractional bar length to within 0.25 sample, no cumulative drift over ~50 wraps, checked against an independent oracle (not the engine's own anchor-formula math); free-run take (`recorded_bpm == 0`) still uses the integrated counter. Not yet covered: xrun/transport-relocation recovery, and undo/redo swapping `anchor_beat`/`loop_beats` across chunks. |
 | `test_tempo_change_aborts.cpp` ✓ | bpm change while recording → Empty; while armed → Empty; while close-pending → Empty; unchanged bpm is a no-op; bpm change in playback is a no-op; while overdub armed → Playback; while overdub capturing → Playback; while overdub close-pending → Playback |
 | `test_latency_comp.cpp` | playback read-ahead = stretcher latency ⚑; overdub impulse lands within ±2 samples ⚑ |
-| `test_overdub.cpp` | overdub sums layers ⚑; undo pops layer; inherits source length |
+| `test_overdub.cpp` ✓ | overdub sums layers (pure additive, `OVERDUB_DECAY` = 1.0); undo pops layer + restores un-summed source content; redo restores the layer; inherits source length exactly (no rounding) |

@@ -22,6 +22,7 @@
 #include <cmath>
 #include <string>
 #include <vector>
+#include <algorithm>
 
 /* ---- tiny assertion framework -------------------------------------- */
 
@@ -285,6 +286,18 @@ struct PluginHost {
     {
         LoopChunk *l = plugin()->pLS->headLoopChunk;
         return l ? (void *) l->pStretcher : NULL;
+    }
+
+    // Drive a constant input value for the next run() calls.
+    void set_input(float v) { std::fill(in.begin(), in.end(), v); }
+
+    // Raw sample peek into the head chunk's recorded buffer -- lets a test
+    // verify overdub actually summed layers (not just that the state
+    // machine transitioned correctly).
+    float loop_sample(unsigned long idx)
+    {
+        LoopChunk *l = plugin()->pLS->headLoopChunk;
+        return l ? l->pLoopStart[idx] : 0.0f;
     }
 };
 

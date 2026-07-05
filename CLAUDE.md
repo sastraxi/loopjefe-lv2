@@ -99,6 +99,13 @@ and the boundary aborts.
 - **Known 2x2 quirk**: its `STATE_RECORD_ARM` outer loop steps by
   `NUM_CHANNELS` while indexing inputs by that stepped index
   (inconsistent with `STATE_RECORD` below it). Pre-existing; leave as-is.
+- **Overdub write is `input + OVERDUB_DECAY * feedback * old`**
+  (`OVERDUB_DECAY` = 1.0 by default: pure additive layering, matches the
+  RC-505's OVERDUB "ensemble" mode). This is **not** a clipping guard —
+  nothing in the audio path clamps sample values, and repeated overdub
+  passes at normal levels can push well past 0dBFS. If you need levels
+  under control, put a limiter/compressor/gain stage after loopjefe in
+  the chain; don't rely on this plugin to self-limit.
 
 ## Design rationale
 
