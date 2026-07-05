@@ -199,14 +199,16 @@ typedef struct _LoopChunk {
 
     // Render-cache bridge (see docs/tempo-follow-plan.md "Render cache"):
     // a side buffer holding this chunk's audio pitch-preserved and
-    // time-stretched to `cached_bpm`. cached_bpm == 0 means empty/stale.
-    // Rendered synchronously (offline stretch, not incremental) the first
-    // block a stable non-unity ratio is seen at a given transport bpm;
-    // invalidated and re-rendered whenever the transport bpm changes.
-    // Freed alongside pStretcher on the same four destroy paths.
+    // time-stretched to `cached_bpm` (0 = empty/stale). Filled a sliver
+    // at a time by ensureStretchCacheFilled() as the playhead needs it,
+    // not all at once; lRenderPos tracks how much of the native buffer
+    // has been fed so far. Freed alongside pStretcher on the same four
+    // destroy paths.
     double cached_bpm;
     LADSPA_Data * pCacheStart;
     unsigned long lCacheLength;
+    unsigned long lCacheCapacity;
+    unsigned long lRenderPos;
 
     // the loop where we should be frontfilled and backfilled from
     struct _LoopChunk* srcloop;
@@ -527,24 +529,25 @@ static inline double phaseMapPhase01(double abs_beats_now, double anchor_beat, d
     return phase01;
 }
 
-// Render the render-cache bridge (docs/tempo-follow-plan.md "Render
-// cache"): pitch-preserving offline stretch of the chunk's whole native
-// buffer to `target_bpm`, stored in a side buffer. The chunk's phase
-// (dCurrPos, in native-sample space) is untouched by this -- it keeps
-// driving bar-lock exactly as at unity ratio; the cache only changes
-// which samples get read for a given native-space position (see the
-// STATE_PLAY read site, which maps native lCurrPos -> cache index by
-// dividing through by the same ratio). Synchronous/blocking: acceptable
-// here because it only runs once per stable bpm (see cached_bpm guard at
-// the call site), not every block -- true incremental fill is future
-// work (plan's "Render cache" section).
-static void renderStretchCache(LoopChunk *loop, double sample_rate, double target_bpm)
+static const unsigned long STRETCH_FEED_CHUNK = 256;
+
+// (Re)start the render-cache generation for `target_bpm`. Sizes the side
+// buffer and stretcher but feeds no audio yet -- ensureStretchCacheFilled()
+// does that. cached_bpm is set immediately so the call site's guard only
+// fires once per bpm change, not every block while filling.
+static void startStretchCacheGeneration(LoopChunk *loop, double sample_rate, double target_bpm)
 {
+    if (loop->pStretcher) {
+        delete loop->pStretcher;
+        loop->pStretcher = NULL;
+    }
     if (loop->pCacheStart) {
         free(loop->pCacheStart);
         loop->pCacheStart = NULL;
-        loop->lCacheLength = 0;
     }
+    loop->lCacheLength = 0;
+    loop->lCacheCapacity = 0;
+    loop->lRenderPos = 0;
     loop->cached_bpm = 0.0;
 
     if (loop->recorded_bpm <= 0.0 || loop->lLoopLength == 0 || target_bpm <= 0.0) {
@@ -554,33 +557,47 @@ static void renderStretchCache(LoopChunk *loop, double sample_rate, double targe
     double ratio = target_bpm / loop->recorded_bpm;
     double timeRatio = 1.0 / ratio;
 
-    RubberBand::RubberBandStretcher rb((size_t) sample_rate, 1,
-        RubberBand::RubberBandStretcher::OptionProcessOffline
+    loop->lCacheCapacity = (unsigned long) (loop->lLoopLength / ratio) + 4096;
+    loop->pCacheStart = (LADSPA_Data *) malloc(loop->lCacheCapacity * sizeof(LADSPA_Data));
+
+    loop->pStretcher = new RubberBand::RubberBandStretcher((size_t) sample_rate, 1,
+        RubberBand::RubberBandStretcher::OptionProcessRealTime
             | RubberBand::RubberBandStretcher::OptionEngineFiner
             | RubberBand::RubberBandStretcher::OptionWindowShort);
-    rb.setTimeRatio(timeRatio);
+    loop->pStretcher->setTimeRatio(timeRatio);
 
-    const float *studyInputs[1] = { loop->pLoopStart };
-    rb.study(studyInputs, loop->lLoopLength, true);
-    rb.process(studyInputs, loop->lLoopLength, true);
-
-    unsigned long capacity = (unsigned long) (loop->lLoopLength / ratio) + 4096;
-    LADSPA_Data *cache = (LADSPA_Data *) malloc(capacity * sizeof(LADSPA_Data));
-    unsigned long total = 0;
-    while (total < capacity) {
-        int avail = rb.available();
-        if (avail <= 0) break;
-        size_t want = (size_t) avail;
-        if (want > capacity - total) want = capacity - total;
-        float *outs[1] = { cache + total };
-        size_t got = rb.retrieve(outs, want);
-        if (got == 0) break;
-        total += got;
-    }
-
-    loop->pCacheStart = cache;
-    loop->lCacheLength = total;
     loop->cached_bpm = target_bpm;
+}
+
+// Top up the render cache just far enough to cover `neededIdx`, feeding
+// the stretcher in small chunks rather than the whole loop at once. Once
+// lRenderPos reaches lLoopLength the generation is complete and every
+// later wrap is a pure read.
+static void ensureStretchCacheFilled(LoopChunk *loop, unsigned long neededIdx)
+{
+    if (!loop->pStretcher || !loop->pCacheStart) return;
+
+    while (loop->lCacheLength <= neededIdx && loop->lRenderPos < loop->lLoopLength) {
+        unsigned long chunk = loop->lLoopLength - loop->lRenderPos;
+        if (chunk > STRETCH_FEED_CHUNK) chunk = STRETCH_FEED_CHUNK;
+        bool final = (loop->lRenderPos + chunk >= loop->lLoopLength);
+
+        const float *in[1] = { loop->pLoopStart + loop->lRenderPos };
+        loop->pStretcher->process(in, chunk, final);
+        loop->lRenderPos += chunk;
+
+        int avail = loop->pStretcher->available();
+        while (avail > 0 && loop->lCacheLength < loop->lCacheCapacity) {
+            unsigned long space = loop->lCacheCapacity - loop->lCacheLength;
+            size_t want = (size_t) avail;
+            if (want > space) want = space;
+            float *outs[1] = { loop->pCacheStart + loop->lCacheLength };
+            size_t got = loop->pStretcher->retrieve(outs, want);
+            if (got == 0) break;
+            loop->lCacheLength += got;
+            avail = loop->pStretcher->available();
+        }
+    }
 }
 
 
@@ -630,6 +647,8 @@ static LoopChunk * pushNewLoopChunk(SooperLooper* pLS, unsigned long initLength)
     loop->cached_bpm = 0.0;
     loop->pCacheStart = NULL;
     loop->lCacheLength = 0;
+    loop->lCacheCapacity = 0;
+    loop->lRenderPos = 0;
 
 
     //DBG(fprintf(stderr, "New head is %08x\n", (unsigned)loop);)
@@ -688,6 +707,8 @@ static void clearLoopChunks(SooperLooper *pLS)
             loop->pCacheStart = NULL;
             loop->cached_bpm = 0.0;
             loop->lCacheLength = 0;
+            loop->lCacheCapacity = 0;
+            loop->lRenderPos = 0;
         }
         loop = loop->prev;
     }
@@ -2217,19 +2238,15 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                             dTempoRate = fRate * ratio;
                             stretchRatio = ratio;
 
-                            // Pitch stretch (docs/tempo-follow-plan.md "Tempo
-                            // follow (stretch)"): the phase map above already
-                            // keeps bar-lock at any ratio -- this only swaps
-                            // *which buffer* gets read so pitch survives a
-                            // tempo change. Bypass (raw buffer, no stretch)
-                            // at unity ratio; below, cache the stretch keyed
-                            // on transport_bpm so a stable tempo only pays
-                            // the render cost once.
+                            // Bypass (raw buffer) at unity ratio; otherwise a
+                            // new bpm starts a fresh cache generation that
+                            // fills incrementally as the playhead needs it
+                            // (see ensureStretchCacheFilled).
                             if (fabs(ratio - 1.0) > STRETCH_RATIO_EPS) {
                                 if (loop->cached_bpm != plugin->transport_bpm) {
-                                    renderStretchCache(loop, pLS->fSampleRate, plugin->transport_bpm);
+                                    startStretchCacheGeneration(loop, pLS->fSampleRate, plugin->transport_bpm);
                                 }
-                                useStretchCache = (loop->pCacheStart != NULL && loop->lCacheLength > 0);
+                                useStretchCache = (loop->pCacheStart != NULL);
                             }
                         }
 
@@ -2281,21 +2298,25 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                                 {
                                     LADSPA_Data fInterpSample;
                                     if (useStretchCache) {
-                                        // Native lCurrPos (0..lLoopLength) maps onto
-                                        // the cache (0..lLoopLength/ratio) by the same
-                                        // ratio dTempoRate scales dCurrPos by -- so the
+                                        // Native lCurrPos maps onto the cache by the
+                                        // same ratio that scales dCurrPos, so the
                                         // cache wraps exactly when dCurrPos wraps.
                                         double dCachePos = (double) lCurrPos / stretchRatio;
                                         unsigned long lCacheIdx = (unsigned long) dCachePos;
-                                        if (lCacheIdx >= loop->lCacheLength) {
-                                            lCacheIdx = loop->lCacheLength - 1;
+                                        ensureStretchCacheFilled(loop, lCacheIdx + 1);
+                                        if (loop->lCacheLength == 0) {
+                                            fInterpSample = 0.0;
+                                        } else {
+                                            if (lCacheIdx >= loop->lCacheLength) {
+                                                lCacheIdx = loop->lCacheLength - 1;
+                                            }
+                                            double dCacheFrac = dCachePos - lCacheIdx;
+                                            unsigned long lCacheNext =
+                                                (lCacheIdx + 1 >= loop->lCacheLength) ? 0 : lCacheIdx + 1;
+                                            fInterpSample =
+                                                *(loop->pCacheStart + lCacheIdx) * (1.0 - dCacheFrac)
+                                                + *(loop->pCacheStart + lCacheNext) * dCacheFrac;
                                         }
-                                        double dCacheFrac = dCachePos - lCacheIdx;
-                                        unsigned long lCacheNext =
-                                            (lCacheIdx + 1 >= loop->lCacheLength) ? 0 : lCacheIdx + 1;
-                                        fInterpSample =
-                                            *(loop->pCacheStart + lCacheIdx) * (1.0 - dCacheFrac)
-                                            + *(loop->pCacheStart + lCacheNext) * dCacheFrac;
                                     } else {
                                         double dFracPos = fmod(loop->dCurrPos, loop->lLoopLength) - lCurrPos;
                                         unsigned long lNextPos = (lCurrPos + 1 >= loop->lLoopLength) ? 0 : lCurrPos + 1;

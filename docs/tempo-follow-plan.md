@@ -44,16 +44,23 @@ a plain resample.
 
 **Not started (⚑ — all design-only):**
 1. **Latency compensation** — `test_latency_comp.cpp`
-2. **Incremental render-cache fill** — the cache is currently rendered
-   *synchronously* (a single blocking offline Rubber Band pass) the first
-   block a stable non-unity ratio is seen at a given transport bpm, rather
-   than filled incrementally across blocks as the playhead advances. Fine
-   for a several-second loop today (sub-millisecond blocking call in
-   practice) but not realtime-safe in the strict sense for a much longer
-   loop; the plan's original incremental design is still the eventual fix.
-3. **Ramping tempo** — falls back to nothing today (the cache-miss path
-   just re-renders synchronously every block at a changing bpm); the
+2. **Ramping tempo** — falls back to nothing today (the cache-miss path
+   just restarts the render generation every block at a changing bpm); the
    plan's streaming-Rubber-Band-during-a-ramp path is unbuilt.
+
+**Done (✓ in code), continued:**
+- **Incremental render-cache fill** — `test_tempo_follow.cpp`
+  (`test_render_cache_fills_incrementally`). The cache no longer renders
+  a chunk's whole native buffer in one blocking offline pass. Each
+  `LoopChunk` now tracks `lRenderPos` (how far into its native buffer the
+  stretcher has been fed) and `lCacheCapacity`; `startStretchCacheGeneration()`
+  resets these and creates a real-time `RubberBandStretcher` when the
+  transport bpm changes, and `ensureStretchCacheFilled()` feeds it in
+  small chunks (`STRETCH_FEED_CHUNK`), called from the per-sample
+  STATE_PLAY read site with the smallest cache index that sample needs —
+  so a block only ever renders the sliver of audio the playhead is about
+  to consume. Once `lRenderPos == lLoopLength` the generation is complete
+  and every later wrap is a pure read, same as before.
 
 **Done (✓ in code), continued:**
 - **Rubber Band pitch stretch** — `test_tempo_follow.cpp`
@@ -373,7 +380,7 @@ The existing chunk stack is *mostly* stretch-ready, with three joints:
   `undoLoop` itself must **not** free the stretcher — redo restores the
   chunk and the warmed stretcher state. Only `clearLoopChunks` frees.
 
-## Render cache (future)
+## Render cache
 
 The realtime stretch above pays the stretch cost every block at a non-unity
 ratio, forever. For the common case (set a new tempo, hold it for 10

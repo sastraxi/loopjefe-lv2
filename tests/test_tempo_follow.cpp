@@ -296,11 +296,52 @@ static void test_pitch_preserved_not_resample()
     CHECK(mismatches > 0);
 }
 
+// Render-cache fill is incremental, not a single blocking pass. A few
+// blocks in, only part of the native loop should have been fed to the
+// stretcher (lRenderPos < lLoopLength); once enough blocks have run to
+// cover a full wrap, the whole loop has been fed and the cache is
+// complete for good.
+static void test_render_cache_fills_incrementally()
+{
+    PluginHost h(SR, /*max_block=*/BLK);
+    record_one_bar_with_tone(h, /*bpm=*/120.0);
+    close_one_bar(h, /*bpm=*/120.0);
+    mute_dry(h);
+
+    const double new_bpm = 140.0;
+    LoopChunk *loop = h.plugin()->pLS->headLoopChunk;
+    CHECK(loop != NULL);
+    if (!loop) return;
+
+    push_at(h, 0.0, new_bpm);
+    h.in.assign(BLK, 0.0f);
+    h.out.assign(BLK, 0.0f);
+    h.run(BLK);
+
+    // One 1000-sample block in: nowhere near the whole 96000-sample loop
+    // should have been rendered yet.
+    CHECK(loop->lRenderPos > 0);
+    CHECK(loop->lRenderPos < loop->lLoopLength);
+
+    // Run enough further blocks to cover a full wrap at this ratio.
+    const double ratio = new_bpm / BPM;
+    const int total_blocks = (int) ceil(loop->lLoopLength / ratio / BLK) + 2;
+    for (int k = 1; k < total_blocks; k++) {
+        push_at(h, (double) k * BLK, new_bpm);
+        h.in.assign(BLK, 0.0f);
+        h.out.assign(BLK, 0.0f);
+        h.run(BLK);
+    }
+
+    CHECK_EQ(loop->lRenderPos, loop->lLoopLength);
+}
+
 int main()
 {
     test_unity_ratio_bypasses_bit_identical();
     test_no_anchor_never_stretches();
     test_tempo_change_keeps_bar_lock();
     test_pitch_preserved_not_resample();
+    test_render_cache_fills_incrementally();
     return test_summary("test_tempo_follow");
 }
