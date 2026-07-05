@@ -34,7 +34,7 @@ That's all `lv2_test_host.h` does.
 | `lv2_test_host.h` | `PluginHost` — the in-process host. URID-map stub, all ports wired, a `time:Position` forge helper, and driver/readout methods. |
 | `test_transitions.cpp` | Surface-state cycle + mode-aware reset + a transport-read smoke test. |
 | `test_record_lifecycle.cpp` | Bar-quantized record start/stop, the phase-continuous playback cursor, and the armed/close-pending aborts. |
-| `test_tempo_change_aborts.cpp` | A transport bpm change while in a capture state (TRIG_START/RECORD/TRIG_STOP for record; armed/STATE_OVERDUB/close-pending for overdub) aborts: Recording family → Empty, Overdub family → Playback (pop layer / cancel arm, cursor preserved). Unchanged bpm and bpm-change-in-playback are no-ops. |
+| `test_tempo_change_aborts.cpp` | A transport bpm change while in a capture state (RECORD_ARM/RECORD/RECORD_CLOSE for record; OVERDUB_ARM/OVERDUB/OVERDUB_CLOSE for overdub) aborts: Recording family → Empty, Overdub family → Playback (pop layer / cancel arm, cursor preserved). Unchanged bpm and bpm-change-in-playback are no-ops. |
 | `test_state_ports_contract.cpp` | The `state` port is a pure readout (tracks surface, ignores host writes); `advance` is edge-triggered (one press = one step, held doesn't re-fire). |
 | `test_overdub_lifecycle.cpp` | The reachable overdub path: arm from Playback fires at the next loop wrap; advance-during-arm cancels; commit quantizes to wrap; second advance force-closes (keeps layer, no phase reset); reset aborts the layer (cursor preserved). |
 | `Makefile` | Builds each `test_*.cpp` into its own binary. |
@@ -74,8 +74,8 @@ Two mechanics worth knowing:
   `run()` leaves the port untouched, so it never taps.
 - **Free-run vs. transport.** With no `time:Position` pushed, record-arm
   falls back to free-run and starts recording *within the same `run()`* —
-  so `STATE_TRIG_START` is never observable across a block boundary. To
-  test the bar-quantized arm (where `TRIG_START` persists until a
+  so `STATE_RECORD_ARM` is never observable across a block boundary. To
+  test the bar-quantized arm (where `STATE_RECORD_ARM` persists until a
   downbeat), push a rolling transport with an off-downbeat `barBeat`.
 
 ### Transport atom quirk
@@ -132,11 +132,11 @@ the intended contract.
 
 `test_record_lifecycle.cpp`:
 
-- record start snaps to the next downbeat (`TRIG_START` held off-beat),
-  free-run starts immediately;
+- record start snaps to the next downbeat (`STATE_RECORD_ARM` held
+  off-beat), free-run starts immediately;
 - record stop quantizes to the nearest whole measure — round up keeps
-  recording out to the boundary (`TRIG_STOP` close-pending), round down
-  truncates, under half a measure discards to Empty;
+  recording out to the boundary (`STATE_RECORD_CLOSE` close-pending),
+  round down truncates, under half a measure discards to Empty;
 - the playback cursor lands phase-continuous on the grid (`fmod`) and
   stays measure-locked as it wraps;
 - a tap while armed or close-pending aborts the take to Empty.

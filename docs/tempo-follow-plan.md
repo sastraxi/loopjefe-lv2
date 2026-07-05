@@ -29,23 +29,28 @@ across the entire capture lifecycle.
 
 | Surface (LED) | Engine | Phase | Exit | At bar boundary |
 |---|---|---|---|---|
-| Empty | `OFF` | no loop | tap → arm | — |
-| Recording | `TRIG_START` | pre-record (armed) | auto | begin capture on downbeat |
-| Recording | `RECORD` | capturing | tap → close-pending | — |
-| Recording | `TRIG_STOP` | post-record (closing) | auto | close → Playback |
-| Playback | `PLAY` | playing | tap → stop / reset | — |
-| Stopped | `OFF` | loop held, silent | tap → resume | — |
+| Empty | `OFF` | no loop | advance → arm | — |
+| Recording | `RECORD_ARM` | pre-record (armed) | auto | begin capture on downbeat |
+| Recording | `RECORD` | capturing | advance → close-pending | — |
+| Recording | `RECORD_CLOSE` | post-record (closing) | auto | close → Playback |
+| Playback | `PLAY` | playing | advance → stop / reset → arm overdub | — |
+| Stopped | `OFF` | loop held, silent | advance → resume | — |
+| Overdub | `OVERDUB_ARM` | pre-overdub (armed) | auto at loop wrap | begin layer on wrap |
+| Overdub | `OVERDUB` | capturing layer | advance → close-pending | — |
+| Overdub | `OVERDUB_CLOSE` | post-overdub (closing) | auto at loop wrap | close → Playback |
 
-`TRIG_STOP` is currently dead code, repurposed here as the explicit
-close-pending state. Pre/post-**overdub** states are defined but unreached
-(reserved like `SURFACE_OVERDUB`), ready for a future overdub surface path.
+`RECORD_CLOSE` (formerly `TRIG_STOP`) was dead code in upstream, repurposed
+as the explicit close-pending state. The overdub arm/close states
+(`OVERDUB_ARM`/`OVERDUB_CLOSE`) fall through to the `PLAY`/`OVERDUB` audio
+paths respectively — see `docs/state-machine-redesign.md` for the full
+symmetric design.
 
 ## Record lifecycle
 
-- **Start** (`TRIG_START`): on arm, wait for the next downbeat, begin
+- **Start** (`RECORD_ARM`): on arm, wait for the next downbeat, begin
   capture there. Free-run fallback (invalid transport): start immediately.
-- **Stop** (`TRIG_STOP`): the tap sets close-pending; the close quantizes
-  to the nearest whole measure by current bar-phase `f`:
+- **Stop** (`RECORD_CLOSE`): the advance sets close-pending; the close
+  quantizes to the nearest whole measure by current bar-phase `f`:
   - `f ≥ 0.5` (released early) → keep capturing to the next downbeat and
     close there — the tail is real audio (RC-505 behavior).
   - `f < 0.5` (released late) → close now, truncate back to the boundary

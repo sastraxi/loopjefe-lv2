@@ -58,14 +58,14 @@ static bool run_until_playback(PluginHost &h, double start, int cap)
     return false;
 }
 
-// Arm off-downbeat: the engine holds TRIG_START until the bar boundary.
+// Arm off-downbeat: the engine holds STATE_RECORD_ARM until the bar boundary.
 static void test_start_snaps_to_downbeat()
 {
     PluginHost h(SR);
     h.set_transport(BPM, BPB, /*bar_beat=*/2.0, /*rolling=*/true);
     h.tap(BLK);                          // boundary two beats away, past this block
     CHECK_EQ(h.surface(), SURFACE_RECORDING);
-    CHECK_EQ(h.engine(),  STATE_TRIG_START);   // armed, not yet capturing
+    CHECK_EQ(h.engine(),  STATE_RECORD_ARM);   // armed, not yet capturing
     CHECK_EQ(h.loop_length(), 0);
 
     push_at(h, 0.0);                     // downbeat arrives
@@ -94,7 +94,7 @@ static void test_round_up_keeps_recording_to_boundary()
     push_at(h, 168000);
     h.tap(0);                            // finalize, no extra samples this block
     CHECK_EQ(h.surface(), SURFACE_RECORDING);   // LED still recording
-    CHECK_EQ(h.engine(),  STATE_TRIG_STOP);     // close-pending
+    CHECK_EQ(h.engine(),  STATE_RECORD_CLOSE);     // close-pending
 
     CHECK(run_until_playback(h, 168000, /*cap=*/40));
     CHECK_EQ(h.engine(),      STATE_PLAY);
@@ -176,7 +176,7 @@ static void test_second_tap_in_pending_force_closes()
     record_blocks(h, 168);               // 1.75 bars -> round up to 2
     push_at(h, 168000);
     h.tap(0);
-    CHECK_EQ(h.engine(), STATE_TRIG_STOP);       // close-pending
+    CHECK_EQ(h.engine(), STATE_RECORD_CLOSE);       // close-pending
     CHECK_EQ(h.loop_length(), 168000);
 
     h.tap(0);                            // force-close now, keep the take

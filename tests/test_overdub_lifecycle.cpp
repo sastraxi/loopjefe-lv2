@@ -4,13 +4,14 @@
    force-close early (second advance), and abort (reset). All exercised
    in-process via lv2_test_host.h.
 
-   Overdub does NOT reuse STATE_TRIG_START/STATE_TRIG_STOP (those do dry
+   Overdub does NOT reuse STATE_RECORD_ARM/STATE_RECORD_CLOSE (those do dry
    passthrough / raw capture, wrong for overdub -- the existing loop keeps
    playing during arm, and the close keeps summing the layer on top).
-   Instead the engine stays in STATE_PLAY during arm and STATE_OVERDUB
-   during close, with pending_overdub_arm / pending_overdub_close flags
-   signaling the wrap-point transitions. Free-run (no transport) is used
-   here so the wrap is driven purely by dCurrPos, no bar-grid dependency.
+   Instead the engine uses STATE_OVERDUB_ARM (falls through to STATE_PLAY
+   audio) during arm and STATE_OVERDUB_CLOSE (falls through to STATE_OVERDUB
+   audio) during close, firing the wrap transitions from inside those
+   blocks. Free-run (no transport) is used here so the wrap is driven
+   purely by dCurrPos, no bar-grid dependency.
 
    GPL, same as the rest of the repo. */
 
@@ -44,7 +45,7 @@ static void test_arm_from_playback_fires_at_wrap()
 
     h.pulse_reset();                            // arm overdub
     CHECK_EQ(h.surface(), SURFACE_OVERDUB);
-    CHECK_EQ(h.engine(),  STATE_PLAY);          // still playing
+    CHECK_EQ(h.engine(),  STATE_OVERDUB_ARM);  // armed, falls through to PLAY audio
     CHECK(h.srcloop() == NULL);                 // no layer yet
 
     // Run to the wrap. The loop is 96000 samples; cursor is at 0 after the
@@ -58,8 +59,8 @@ static void test_arm_from_playback_fires_at_wrap()
 }
 
 // advance during the arm (before the wrap) cancels the arm and returns to
-// plain Playback -- the analog of advance-during-TRIG_START for record. No
-// layer was created yet, nothing to destroy.
+// plain Playback -- the analog of advance-during-STATE_RECORD_ARM for record.
+// No layer was created yet, nothing to destroy.
 static void test_advance_during_arm_cancels()
 {
     PluginHost h(SR);
@@ -67,7 +68,7 @@ static void test_advance_during_arm_cancels()
 
     h.pulse_reset();                            // arm
     CHECK_EQ(h.surface(), SURFACE_OVERDUB);
-    CHECK_EQ(h.engine(),  STATE_PLAY);
+    CHECK_EQ(h.engine(),  STATE_OVERDUB_ARM);
 
     h.pulse_advance(0);                         // cancel the arm
     CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
@@ -93,15 +94,14 @@ static void test_commit_quantizes_to_wrap()
         h.run(BLK);
     h.pulse_advance(0);                         // commit -> close-pending
     CHECK_EQ(h.surface(), SURFACE_OVERDUB);     // still OVERDUB through the window
-    CHECK_EQ(h.engine(),  STATE_OVERDUB);
-    CHECK(h.plugin()->pending_overdub_close);
+    CHECK_EQ(h.engine(),  STATE_OVERDUB_CLOSE);
 
     // Run the remaining 72 blocks to the wrap. At the wrap, close -> Playback.
     for (int k = 0; k < 72; k++)
         h.run(BLK);
     CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
     CHECK_EQ(h.engine(),  STATE_PLAY);
-    CHECK(!h.plugin()->pending_overdub_close);
+    CHECK(h.engine() != STATE_OVERDUB_CLOSE);
     CHECK(h.srcloop() != NULL);                 // layer kept
 }
 
@@ -191,12 +191,12 @@ static void test_reset_during_close_pending_aborts()
     for (int k = 0; k < 24; k++)                // capture 24000 samples
         h.run(BLK);
     h.pulse_advance(0);                         // commit -> close-pending
-    CHECK(h.plugin()->pending_overdub_close);
+    CHECK(h.engine() == STATE_OVERDUB_CLOSE);
 
     h.pulse_reset();                            // abort: drop the layer
     CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
     CHECK_EQ(h.engine(),  STATE_PLAY);
-    CHECK(!h.plugin()->pending_overdub_close);
+    CHECK(h.engine() != STATE_OVERDUB_CLOSE);
     CHECK(h.srcloop() == NULL);                 // back to the source loop
 }
 

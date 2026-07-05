@@ -11,12 +11,12 @@
    arms it. The Boss RC-505 two-button-per-track model maps onto shortpress
    (`advance`) / longpress (`reset`) of one footswitch, each with its own MIDI
    CC, learnable in MOD.
-3. **Unified transitional phases.** `TRIG_START` (armed, waiting for boundary)
-   and `TRIG_STOP` (close-pending, capturing tail) become **mode-agnostic** —
-   usable by both record and overdub. Today they're record-only and overdub is
-   a single in-and-out `STATE_OVERDUB` with no quantize phases; that's the
-   "kinda messed up" part. The engine distinguishes record vs overdub context
-   by `headLoopChunk->srcloop` (NULL = record, set = overdub).
+3. **Symmetric transitional phases.** Each family has its own arm/capture/
+   close trio: `RECORD_ARM`/`RECORD`/`RECORD_CLOSE` and `OVERDUB_ARM`/
+   `OVERDUB`/`OVERDUB_CLOSE`. The arm/close states fall through to their
+   family's audio path (loop playback for overdub arm, layering for overdub
+   close) and add only a wrap-point check. No flags — the engine state is the
+   single source of truth.
 
 ## 2. Port changes (both bundles)
 
@@ -45,17 +45,17 @@ reachable.
 
 | Surface | Engine phase | advance (shortpress) | reset (longpress) |
 |---|---|---|---|
-| **Empty** | `OFF` | arm record → `Recording`/`TRIG_START` | no-op |
-| **Recording** | `TRIG_START` (armed, waiting for downbeat) | abort → `Empty`/`OFF` | abort → `Empty`/`OFF` |
-| **Recording** | `RECORD` (capturing) | commit: round to nearest measure → `Playback` (round-down: immediate `PLAY`; round-up: `TRIG_STOP` close-pending; <½ measure: discard → `Empty`) | abort → `Empty`/`OFF` |
-| **Recording** | `TRIG_STOP` (close-pending, capturing tail to rounded target) | **force-close now**: zero-fill tail to `pending_close_length`, → `Playback`/`PLAY` | abort → `Empty`/`OFF` |
-| **Playback** | `PLAY` | stop → `Stopped`/`OFF` | arm overdub → `Overdub`/`TRIG_START` |
+| **Empty** | `OFF` | arm record → `Recording`/`RECORD_ARM` | no-op |
+| **Recording** | `RECORD_ARM` (armed, waiting for downbeat) | abort → `Empty`/`OFF` | abort → `Empty`/`OFF` |
+| **Recording** | `RECORD` (capturing) | commit: round to nearest measure → `Playback` (round-down: immediate `PLAY`; round-up: `RECORD_CLOSE` close-pending; <½ measure: discard → `Empty`) | abort → `Empty`/`OFF` |
+| **Recording** | `RECORD_CLOSE` (close-pending, capturing tail to rounded target) | **force-close now**: zero-fill tail to `pending_close_length`, → `Playback`/`PLAY` | abort → `Empty`/`OFF` |
+| **Playback** | `PLAY` | stop → `Stopped`/`OFF` | arm overdub → `Overdub`/`OVERDUB_ARM` |
 | **Stopped** | `OFF` | resume → `Playback`/`PLAY` | delete all → `Empty`/`OFF` |
-| **Overdub** | `TRIG_START` (armed, waiting for loop wrap) | abort → `Playback`/`PLAY` | abort → `Playback`/`PLAY` |
-| **Overdub** | `OVERDUB` (capturing layer) | commit: quantize to next loop wrap → `TRIG_STOP` close-pending | abort layer → `Playback`/`PLAY` |
-| **Overdub** | `TRIG_STOP` (close-pending, capturing to loop wrap) | **force-close now**: stop capturing, → `Playback`/`PLAY` (no zero-fill — source loop already underlies) | abort layer → `Playback`/`PLAY` |
+| **Overdub** | `OVERDUB_ARM` (armed, waiting for loop wrap; falls through to `PLAY` audio) | abort → `Playback`/`PLAY` | abort → `Playback`/`PLAY` |
+| **Overdub** | `OVERDUB` (capturing layer) | commit: quantize to next loop wrap → `OVERDUB_CLOSE` close-pending | abort layer → `Playback`/`PLAY` |
+| **Overdub** | `OVERDUB_CLOSE` (close-pending, capturing to loop wrap; falls through to `OVERDUB` audio) | **force-close now**: stop capturing, → `Playback`/`PLAY` (no zero-fill — source loop already underlies) | abort layer → `Playback`/`PLAY` |
 
-Notable changes from today:
+Notable changes from the old design:
 - **advance during record close-pending** changes from "abort to Empty" →
   "force-close now, keep the take." Matches RC-505 "I want out now but keep
   what I have."
@@ -66,6 +66,12 @@ Notable changes from today:
 - **Overdub arm** waits for `dCurrPos≈0` (next loop wrap), not next bar
   downbeat. Free-run: also next wrap (`dCurrPos` wraps regardless of transport
   — no special case).
+- **Symmetric engine states.** Record and overdub each have an arm/capture/
+  close trio: `RECORD_ARM`/`RECORD`/`RECORD_CLOSE` and `OVERDUB_ARM`/
+  `OVERDUB`/`OVERDUB_CLOSE`. The arm/close states fall through to the capture
+  audio path of their family (`RECORD_ARM` → dry passthrough like `RECORD`;
+  `OVERDUB_ARM` → loop playback like `PLAY`; `OVERDUB_CLOSE` → layering like
+  `OVERDUB`), with a wrap-point check that fires the transition. No flags.
 
 ### 4.1 `reset` semantics — the one special case
 
@@ -79,14 +85,14 @@ holding:
 | reset during… | effect |
 |---|---|
 | Empty | no-op (nothing to destroy) |
-| Record arm (`TRIG_START`) | drop take → Empty |
+| Record arm (`RECORD_ARM`) | drop take → Empty |
 | Record capture (`RECORD`) | drop take → Empty |
-| Record close-pending (`TRIG_STOP`) | drop take, including already-captured tail → Empty |
+| Record close-pending (`RECORD_CLOSE`) | drop take, including already-captured tail → Empty |
 | Playback | **arm overdub** (the special case — mode trigger, no destruction) |
 | Stopped | delete all → Empty |
-| Overdub arm (`TRIG_START`) | drop layer → Playback |
+| Overdub arm (`OVERDUB_ARM`) | drop layer → Playback |
 | Overdub capture (`OVERDUB`) | drop layer → Playback |
-| Overdub close-pending (`TRIG_STOP`) | drop layer, including already-captured tail → Playback |
+| Overdub close-pending (`OVERDUB_CLOSE`) | drop layer, including already-captured tail → Playback |
 
 To **keep** a take/layer instead of destroying it, double-tap `advance`
 (advance to enter close-pending, advance again to force-close now). The
@@ -96,12 +102,12 @@ underlying loop. The audience-facing playback cursor is sacred.
 
 ## 5. Mode-aware boundary logic
 
-`TRIG_START` and `TRIG_STOP` each have two boundary targets depending on mode:
+Each family has its own arm/close pair with distinct boundary targets:
 
-| Phase | Record context (srcloop=NULL) | Overdub context (srcloop set) |
+| Phase | Record family | Overdub family |
 |---|---|---|
-| `TRIG_START` boundary | next bar downbeat (`transport_bar_beat=0`) | next loop wrap (`dCurrPos≈0`) |
-| `TRIG_STOP` target | `pending_close_length` (rounded measure count) | `lLoopLength` (the existing loop — no rounding) |
+| Arm boundary | `RECORD_ARM`: next bar downbeat (`transport_bar_beat=0`) | `OVERDUB_ARM`: next loop wrap (`dCurrPos≈0`) |
+| Close target | `RECORD_CLOSE`: `pending_close_length` (rounded measure count) | `OVERDUB_CLOSE`: `lLoopLength` (the existing loop — no rounding) |
 
 The 50%-rounding rule (nearest measure, <½ measure → discard) applies **only
 to record commit**. Overdub commit has no rounding — the loop length is fixed
@@ -114,28 +120,35 @@ hardcoded cutoff.
 
 ## 6. Implementation notes
 
-- `TRIG_START` and `TRIG_STOP` blocks in `run()` switch on
-  `loop->srcloop != NULL` to pick the boundary target (downbeat vs wrap) and
-  the close target (`pending_close_length` vs `lLoopLength`).
-- The arm site (`SURFACE_EMPTY` → record, `SURFACE_PLAYBACK` → overdub) sets
-  the engine to `STATE_TRIG_START` and the surface to `SURFACE_RECORDING` /
-  `SURFACE_OVERDUB` respectively. `capture_bpm` is sampled at arm (already
-  done for record; new for overdub arm).
-- The commit site (`SURFACE_RECORDING`/`SURFACE_OVERDUB` + `advance` while in
-  `RECORD`/`OVERDUB`) does the rounding (record only) and lands in either
-  `PLAY` (round-down / immediate) or `TRIG_STOP` (round-up / quantize-to-wrap).
-- The force-close site (`advance` while in `TRIG_STOP`): record context
-  zero-fills the tail to `pending_close_length` and lands in `PLAY`; overdub
-  context just stops capturing and lands in `PLAY` (no zero-fill — the source
-  loop already underlies the partial layer).
-- The abort sites (`reset`, or `advance` during `TRIG_START`): record context
-  → `clearLoopChunks` → `Empty`/`OFF`; overdub context → `undoLoop` →
-  `Playback`/`PLAY`. `dCurrPos` is preserved through `undoLoop` (already the
-  case — it hands `dCurrPos` to `srcloop`).
-- Tempo-change abort (the facet just landed) extends naturally: it already
-  treats `OVERDUB` as a capture state and pops the layer; once overdub arm /
-  close-pending are reachable, the `TRIG_START`/`TRIG_STOP` arms of the abort
-  fire for overdub too, dropping the layer → `Playback`.
+- **Symmetric engine states.** Record: `RECORD_ARM`/`RECORD`/`RECORD_CLOSE`.
+  Overdub: `OVERDUB_ARM`/`OVERDUB`/`OVERDUB_CLOSE`. No flags — the engine
+  state is the single source of truth for which phase we're in.
+- **Fall-through audio paths.** `OVERDUB_ARM` falls through to the `STATE_PLAY`
+  case (loop playback continues during arm); `OVERDUB_CLOSE` falls through to
+  the `STATE_OVERDUB` case (layering + playback continues during close). The
+  arm/close states add only a wrap-point check that fires the transition —
+  they don't duplicate the audio logic. `RECORD_ARM` and `RECORD_CLOSE` have
+  their own blocks (dry passthrough / raw capture) because the record family
+  has no existing loop to play.
+- **Arm site** (`SURFACE_EMPTY` → record, `SURFACE_PLAYBACK` → overdub):
+  sets the engine to `RECORD_ARM` / `OVERDUB_ARM` and the surface to
+  `SURFACE_RECORDING` / `SURFACE_OVERDUB`. `capture_bpm` is sampled at arm
+  for both families so a tempo change before the boundary aborts.
+- **Commit site** (`SURFACE_RECORDING`/`SURFACE_OVERDUB` + `advance` while
+  in `RECORD`/`OVERDUB`): record does the measure-rounding and lands in
+  `PLAY` (round-down) or `RECORD_CLOSE` (round-up); overdub enters
+  `OVERDUB_CLOSE` (quantize-to-wrap).
+- **Force-close site** (`advance` while in `RECORD_CLOSE`/`OVERDUB_CLOSE`):
+  record zero-fills the tail to `pending_close_length` and lands in `PLAY`;
+  overdub just stops capturing and lands in `PLAY` (no zero-fill — the
+  source loop already underlies the partial layer).
+- **Abort sites** (`reset`, or `advance` during `RECORD_ARM`/`OVERDUB_ARM`):
+  record → `clearLoopChunks` → `Empty`/`OFF`; overdub → `undoLoop` →
+  `Playback`/`PLAY`. `dCurrPos` is preserved through `undoLoop` (it hands
+  `dCurrPos` to `srcloop`).
+- **Tempo-change abort** covers all six capture states: `RECORD_ARM`/
+  `RECORD`/`RECORD_CLOSE` → Empty; `OVERDUB_ARM`/`OVERDUB`/`OVERDUB_CLOSE`
+  → Playback (cancel arm / pop layer, cursor preserved).
 
 ## 7. Mirror rule
 
@@ -148,9 +161,9 @@ TTL changes mirrored to `loopjefe-2x2/src/loopjefe.cpp` and both `.ttl` files
 | File | Status | Cases |
 |---|---|---|
 | `test_transitions.cpp` | **rewrite** — surface cycle is no longer a simple circle | advance/reset per state from §4; reset-on-playback arms overdub (new); delete is two presses; advance-during-close-pending force-closes (new behavior) |
-| `test_record_lifecycle.cpp` | mostly survives | record arm/commit/round-up/round-down/discard/phase-cursor unchanged; add force-close-on-second-advance case |
+| `test_record_lifecycle.cpp` | mostly survives | record arm/commit/round-up/round-down/discard/phase-cursor unchanged; force-close-on-second-advance case |
 | `test_overdub_lifecycle.cpp` | **new** | arm from playback waits for loop wrap; free-run arm; commit quantizes to wrap; second advance force-closes (keeps partial layer); reset aborts layer → Playback; reset-during-arm aborts → Playback; inherits source length; no phase reset on commit/abort (cursor keeps tracking) |
-| `test_port_split.cpp` | **new** | `state` output tracks surface; writing to `state` input port is a no-op (port unwired); `advance` rising edge = one step, self-clears; `last_written_state` is gone |
+| `test_state_ports_contract.cpp` | **new** | `state` output tracks surface; writing to `state` input port is a no-op (port unwired); `advance` rising edge = one step, self-clears; `last_written_state` is gone |
 | `test_tempo_change_aborts.cpp` | extend | bpm change during overdub arm/capture/close-pending → Playback (now reachable + testable via reset-from-playback arm path) |
 
 ## 9. Build / migration

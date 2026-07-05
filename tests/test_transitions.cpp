@@ -26,13 +26,15 @@ static const char *surf_name(int s)
 static const char *eng_name(int s)
 {
     switch (s) {
-    case STATE_OFF:        return "OFF";
-    case STATE_TRIG_START: return "TRIG_START";
-    case STATE_RECORD:     return "RECORD";
-    case STATE_TRIG_STOP:  return "TRIG_STOP";
-    case STATE_PLAY:       return "PLAY";
-    case STATE_OVERDUB:    return "OVERDUB";
-    default:               return "?";
+    case STATE_OFF:            return "OFF";
+    case STATE_RECORD_ARM:    return "RECORD_ARM";
+    case STATE_RECORD:        return "RECORD";
+    case STATE_RECORD_CLOSE:  return "RECORD_CLOSE";
+    case STATE_PLAY:          return "PLAY";
+    case STATE_OVERDUB:       return "OVERDUB";
+    case STATE_OVERDUB_ARM:   return "OVERDUB_ARM";
+    case STATE_OVERDUB_CLOSE: return "OVERDUB_CLOSE";
+    default:                  return "?";
     }
 }
 
@@ -66,7 +68,9 @@ static void test_surface_cycle()
     // EMPTY + tap -> RECORDING. With no valid transport the arm falls back
     // to free-run, and the audio loop starts recording *within the same
     // run()* -- so the engine is already RECORD, never observably
-    // TRIG_START. (TRIG_START only persists across blocks while waiting for
+    // TRIG_START (now STATE_RECORD_ARM). (STATE_RECORD_ARM only persists
+    // across blocks while waiting for a real downbeat; that's a
+    // transport-driven test, added separately.)
     // a real downbeat; that's a transport-driven test, added separately.)
     h.tap();
     CHECK_EQ(h.surface(), SURFACE_RECORDING);
@@ -130,7 +134,7 @@ static void test_reset_from_playback_arms_overdub()
 
     h.pulse_reset();  // arm overdub; 256-sample block < 768-sample loop, no wrap
     CHECK_EQ(h.surface(), SURFACE_OVERDUB);
-    CHECK_EQ(h.engine(),  STATE_PLAY);          // still playing the loop
+    CHECK_EQ(h.engine(),  STATE_OVERDUB_ARM);  // armed, falls through to PLAY audio
 }
 
 // The forge/URID plumbing actually reaches readTimeInfo(): a pushed

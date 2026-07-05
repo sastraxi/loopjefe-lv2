@@ -12,41 +12,35 @@ stereo) placed anywhere in a mod-host pedalboard. Recording start/stop is
 quantized to the shared JACK transport's bar grid (LV2 `time:` extension),
 so multiple independently-recorded loops of different lengths — a 4-bar
 chord loop, a 16-bar bassline recorded after it, in either order — always
-land on the same downbeat. See pi-Stomp's
-`docs/multitrack-looper-plan.md` for the full design, and
-`docs/state-machine-redesign.md` for the two-trigger (advance/reset)
-state-machine contract.
+land on the same downbeat. See `docs/state-machine-redesign.md` for the
+two-trigger (advance/reset) state-machine contract, and pi-Stomp's
+`docs/multitrack-looper-plan.md` for the original bar-synced multitrack
+recording design.
 
-Currently supports:
+## Ports
 
- * mono and stereo in/out
- * record, quantized to the bar grid when the transport is rolling (falls
-   back to free-running/unquantized recording otherwise)
- * play/pause (advance to stop, advance to resume)
- * overdub: reset-from-Playback arms a layer on the next loop wrap;
-   advance commits (quantize-to-wrap, second advance force-closes early);
-   reset aborts the layer (playback cursor preserved)
- * undo
- * redo
+| Port | Direction | Type | Purpose |
+|---|---|---|---|
+| `state` | output | integer/enumeration (Empty=0 Recording=1 Overdub=2 Playback=3 Stopped=4) | Read-only feedback for footswitch LED / MOD UI display |
+| `advance` | input | lv2:toggled, pprops:trigger (momentary, edge-triggered) | One rising edge = one surface-cycle step |
+| `reset` | input | lv2:toggled, pprops:trigger (momentary, edge-triggered) | Mode-aware abort/delete (see `docs/state-machine-redesign.md` §4.1) |
+| `undo` / `redo` | input | lv2:toggled, pprops:trigger | Walk the chunk stack |
+| `dryLevel` | input | 0.0–1.0 | Dry signal monitor level |
+| `time_info` | input | atom:Sequence (`time:Position`) | Transport bar grid for quantization |
+| `input` / `output` | in/out | audio | Mono (`loopjefe`) or stereo in/out (`loopjefe-2x2`) |
 
-## Port layout (breaking change)
+## Features
 
-`state` is now a **read-only output** (lv2:OutputPort) that reports the
-current surface state (Empty=0 Recording=1 Overdub=2 Playback=3 Stopped=4)
-for footswitch LED / MOD UI display. The old bidirectional-write trick
-(plugin reads external writes, compares against its own echo) is gone.
+- mono and stereo in/out
+- record, quantized to the bar grid when the transport is rolling (falls
+  back to free-running/unquantized recording otherwise)
+- play/pause (advance to stop, advance to resume)
+- overdub: reset-from-Playback arms a layer on the next loop wrap;
+  advance commits (quantize-to-wrap, second advance force-closes early);
+  reset aborts the layer (playback cursor preserved)
+- undo / redo
 
-A new momentary **`advance`** input port (lv2:toggled, pprops:trigger,
-identical shape to `reset`) drives the surface-cycle step. One rising edge =
-exactly one step. Saved mod-host sessions and CC mappings that bound the old
-bidirectional `state` input port need to remap: `state` is now display-only,
-`advance` is the trigger.
-
-See `docs/state-machine-redesign.md` for the full transition table and the
-pi-Stomp-side footswitch binding extension it depends on (trigger input +
-display output).
-
-Out of scope (unchanged from upstream's stripped-down feature set): reverse,
-one-shot, multiply, insert, replace, and the full RC-505-style configurable
-Loop Sync / Measure / Quantize / Tempo Sync mode matrix. This is a single,
-hardcoded behavior, not a general-purpose looper emulator.
+Not implemented: reverse, one-shot, multiply, insert, replace, and the
+full RC-505-style configurable Loop Sync / Measure / Quantize / Tempo Sync
+mode matrix. This is a single, hardcoded behavior, not a general-purpose
+looper emulator.
