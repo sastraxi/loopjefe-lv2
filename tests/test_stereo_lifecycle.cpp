@@ -55,9 +55,8 @@ static void test_record_writes_distinct_channels()
     PluginHost h(SR, /*max_block=*/BLK);
     record_freerun_stereo(h, 96, L_REC, R_REC);
 
-    // Interleaved-unit length TODAY (192000 = 96000 frames * 2). After the
-    // planar refactor's reporting step this becomes 96000; flip this line then.
-    CHECK_EQ(h.loop_length(), 96000 * NUM_CHANNELS);
+    // Planar: lLoopLength is now a frame count, independent of NUM_CHANNELS.
+    CHECK_EQ(h.loop_length(), 96000);
 
     // Literal per-channel values at several frames spread across the take.
     const unsigned long frames[] = { 0, 1, 500, 48000, 95999 };
@@ -160,18 +159,18 @@ static void test_undo_reverts_and_preserves_cursor()
 }
 
 // --- capacity: a long take near the SAMPLE_MEMORY budget is not truncated ---
-// Stereo interleaves 2 samples per frame, so this exercises the bump
-// allocator's end-of-memory arithmetic (the refactor splits one allocation
-// into per-channel slabs -- a wrong capacity check would silently truncate).
+// Each channel now has its own arena, so this exercises the per-channel bump
+// allocator's end-of-memory arithmetic (a wrong capacity check would silently
+// truncate).
 static void test_long_take_not_truncated()
 {
     PluginHost h(SR, /*max_block=*/BLK);
-    // SAMPLE_MEMORY=20s @48k => 960000 float budget; 400000 frames = 800000
-    // interleaved samples, comfortably under while still a long take.
+    // SAMPLE_MEMORY=20s @48k => 960000 float total budget, split into 480000
+    // frames per channel; 400000 frames is comfortably under, still a long take.
     const int nblocks = 400;
     record_freerun_stereo(h, nblocks, L_REC, R_REC);
 
-    CHECK_EQ(h.loop_length(), (unsigned long)nblocks * BLK * NUM_CHANNELS);
+    CHECK_EQ(h.loop_length(), (unsigned long)nblocks * BLK);
 
     // A late frame must hold the recorded value on both channels -- if the
     // allocator truncated early, this reads 0 (calloc'd) or the take would

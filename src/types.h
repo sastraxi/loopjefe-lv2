@@ -118,12 +118,16 @@ typedef float LADSPA_Data;
 // one of these will prefix the actual loop data in our buffer memory
 typedef struct _LoopChunk {
 
-    /* pointers in buffer memory. */
-    LADSPA_Data * pLoopStart;
-    LADSPA_Data * pLoopStop;
+    /* pointers in buffer memory. One contiguous per-channel slab each: the
+       audio layout is planar (de-interleaved), so pLoopStart[c] points at
+       channel c's own arena (pLS->pSampleBuf[c]). All the length/position
+       fields below (lLoopLength, dCurrPos, marks, adjustments) count FRAMES
+       -- one unit per output frame -- not interleaved samples. */
+    LADSPA_Data * pLoopStart[NUM_CHANNELS];
+    LADSPA_Data * pLoopStop[NUM_CHANNELS];
     //unsigned long lLoopStart;
     //unsigned long lLoopStop;
-    unsigned long lLoopLength;
+    unsigned long lLoopLength;   // frames
 
     // adjustment needed in the case of multiply/insert
     unsigned long lStartAdj;
@@ -168,21 +172,20 @@ typedef struct _LoopChunk {
     double anchor_beat;
     double loop_beats;
 
-    // Heap-allocated Rubber Band R3 state, one instance per audio channel
-    // (pLoopStart is interleaved, so stereo needs its own stretcher per
-    // channel rather than one fed an interleaved stream -- see
-    // docs/tempo-follow-plan.md "Stereo channels"). Created lazily on the
-    // first block that actually needs to stretch this chunk. Kept alive
-    // across undo/redo (so redo restores a warmed stretcher); only freed
-    // on the destroy paths (see clearLoopChunks). NULL = not yet created.
-    // Can't be embedded inline in LoopChunk -- that would break the
-    // pLoopStart = loop + sizeof(LoopChunk) bump-allocator arithmetic.
+    // Heap-allocated Rubber Band R3 state, one instance per audio channel.
+    // With the planar layout each channel's audio is already a contiguous
+    // slab (pLoopStart[c]), fed straight to this channel's stretcher with no
+    // de-interleave step. Created lazily on the first block that actually
+    // needs to stretch this chunk. Kept alive across undo/redo (so redo
+    // restores a warmed stretcher); only freed on the destroy paths (see
+    // clearLoopChunks). NULL = not yet created. Can't be embedded inline in
+    // LoopChunk -- that would break the bump-allocator arithmetic.
     RubberBand::RubberBandStretcher * pStretcher[NUM_CHANNELS];
 
     // Render-cache bridge (see docs/tempo-follow-plan.md "Render cache"):
     // one side buffer per channel, each holding this chunk's audio
-    // pitch-preserved and time-stretched to `cached_bpm` (0 = empty/stale),
-    // non-interleaved. Both channels are filled and read in lockstep, so
+    // pitch-preserved and time-stretched to `cached_bpm` (0 = empty/stale).
+    // Both channels are filled and read in lockstep, so
     // the position bookkeeping (lCacheLength/lCacheCapacity/lRenderPos,
     // counted in per-channel frames, not interleaved samples) stays
     // shared across the two buffers/stretchers -- "two buffers, one
@@ -216,11 +219,14 @@ typedef struct {
 
     LADSPA_Data fSampleRate;
 
-    /* the sample memory */
+    /* the sample memory: one independent bump-allocator arena per channel
+       (planar layout). LoopChunk headers live in arena 0 only; arenas >0
+       hold pure channel audio. */
     //LADSPA_Data * pfSampleBuf;
-    char * pSampleBuf;
+    char * pSampleBuf[NUM_CHANNELS];
 
-    /* Buffer size, not necessarily a power of two. */
+    /* Per-channel arena size in bytes (total budget / NUM_CHANNELS), not
+       necessarily a power of two. */
     unsigned long lBufferSize;
 
     /* the current state of the sampler */
@@ -358,7 +364,8 @@ public:
     SooperLooperPlugin() {}
     ~SooperLooperPlugin() {
         if (pLS) {
-            free(pLS->pSampleBuf);
+            for (unsigned c = 0; c < NUM_CHANNELS; c++)
+                free(pLS->pSampleBuf[c]);
             free(pLS);
         }
     }
@@ -398,10 +405,6 @@ public:
                               // read-only LED/UI feedback port).
     bool advanceSet;          // edge-tracking for the momentary `advance` port,
                               // mirroring resetSet/undoSet/redoSet.
-
-#if NUM_CHANNELS > 1
-    float temp_buffer[TEMP_BUFFER_SIZE];
-#endif
 
     //lowpass variables
     double a0;

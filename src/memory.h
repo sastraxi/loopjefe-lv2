@@ -18,11 +18,14 @@ static LoopChunk * pushNewLoopChunk(SooperLooper* pLS, unsigned long initLength)
     LoopChunk * loop;
 
     if (pLS->headLoopChunk) {
-        // use the next spot in memory
-        loop  = (LoopChunk *) pLS->headLoopChunk->pLoopStop;
+        // Next header sits right after the previous chunk's channel-0 data
+        // (headers live in arena 0). Arena 0 also carries the LoopChunk
+        // headers, so it is the binding capacity constraint -- checking it
+        // is sufficient (arenas >0 hold pure audio and fill more slowly).
+        loop  = (LoopChunk *) pLS->headLoopChunk->pLoopStop[0];
 
         if ((char *)((char*)loop + sizeof(LoopChunk) + (initLength * sizeof(LADSPA_Data)))
-                >= (pLS->pSampleBuf + pLS->lBufferSize)) {
+                >= (pLS->pSampleBuf[0] + pLS->lBufferSize)) {
             // out of memory, return NULL
             //DBG(fprintf(stderr, "Error pushing new loop, out of loop memory\n");)
             return NULL;
@@ -33,8 +36,11 @@ static LoopChunk * pushNewLoopChunk(SooperLooper* pLS, unsigned long initLength)
 
         loop->prev->next = loop;
 
-        // the loop data actually starts directly following this struct
-        loop->pLoopStart = (LADSPA_Data *) ((char *) loop + sizeof(LoopChunk));
+        // channel-0 data follows this struct; every other channel picks up
+        // where the previous chunk left off in that channel's own arena.
+        loop->pLoopStart[0] = (LADSPA_Data *) ((char *) loop + sizeof(LoopChunk));
+        for (unsigned c = 1; c < NUM_CHANNELS; c++)
+            loop->pLoopStart[c] = pLS->headLoopChunk->pLoopStop[c];
 
         // the stop will be filled in later
 
@@ -43,11 +49,14 @@ static LoopChunk * pushNewLoopChunk(SooperLooper* pLS, unsigned long initLength)
 
     }
     else {
-        // first loop on the list!
-        loop = (LoopChunk *) pLS->pSampleBuf;
+        // first loop on the list! Header + channel-0 audio at the base of
+        // arena 0; each other channel starts at the base of its own arena.
+        loop = (LoopChunk *) pLS->pSampleBuf[0];
         loop->next = loop->prev = NULL;
         pLS->headLoopChunk = pLS->tailLoopChunk = loop;
-        loop->pLoopStart = (LADSPA_Data *) ((char *) loop + sizeof(LoopChunk));
+        loop->pLoopStart[0] = (LADSPA_Data *) ((char *) loop + sizeof(LoopChunk));
+        for (unsigned c = 1; c < NUM_CHANNELS; c++)
+            loop->pLoopStart[c] = (LADSPA_Data *) pLS->pSampleBuf[c];
     }
 
     // raw bump-allocated memory -- pointer fields must be explicitly
@@ -206,9 +215,11 @@ static void fillLoops(SooperLooper *pLS, LoopChunk *mloop, unsigned long lCurrPo
 
         if (loop->frontfill && lCurrPos<=loop->lMarkH && lCurrPos>=loop->lMarkL)
         {
-            // we need to finish off a previous
-            *(loop->pLoopStart + lCurrPos) =
-                *(srcloop->pLoopStart + (lCurrPos % srcloop->lLoopLength));
+            // we need to finish off a previous -- copy every channel's slab
+            // for this frame in lockstep (planar layout, one call per frame).
+            for (unsigned c = 0; c < NUM_CHANNELS; c++)
+                *(loop->pLoopStart[c] + lCurrPos) =
+                    *(srcloop->pLoopStart[c] + (lCurrPos % srcloop->lLoopLength));
 
             // move the right mark according to rate
             if (pLS->fCurrRate > 0) {
@@ -230,10 +241,11 @@ static void fillLoops(SooperLooper *pLS, LoopChunk *mloop, unsigned long lCurrPo
         else if (loop->backfill && lCurrPos<=loop->lMarkEndH && lCurrPos>=loop->lMarkEndL)
         {
 
-            // we need to finish off a previous
-            *(loop->pLoopStart + lCurrPos) =
-                *(srcloop->pLoopStart +
-                        ((lCurrPos  + loop->lStartAdj - loop->lEndAdj) % srcloop->lLoopLength));
+            // we need to finish off a previous -- copy every channel.
+            for (unsigned c = 0; c < NUM_CHANNELS; c++)
+                *(loop->pLoopStart[c] + lCurrPos) =
+                    *(srcloop->pLoopStart[c] +
+                            ((lCurrPos  + loop->lStartAdj - loop->lEndAdj) % srcloop->lLoopLength));
 
 
             // move the right mark according to rate
@@ -273,7 +285,8 @@ static LoopChunk * beginOverdub(SooperLooper *pLS, LoopChunk *loop)
         loop->srcloop = srcloop = loop->prev;
         loop->lCycleLength = srcloop->lCycleLength;
         loop->lLoopLength = srcloop->lLoopLength;
-        loop->pLoopStop = loop->pLoopStart + loop->lLoopLength;
+        for (unsigned c = 0; c < NUM_CHANNELS; c++)
+            loop->pLoopStop[c] = loop->pLoopStart[c] + loop->lLoopLength;
         // srcloop->dCurrPos may still be the raw wrap-check value (can equal
         // or exceed lLoopLength -- the caller's fmod re-centering happens
         // after this returns), so wrap it here before using it to set up
@@ -344,7 +357,8 @@ static LoopChunk * beginReplace(SooperLooper *pLS, LoopChunk *loop)
         loop->dOrigFeedback = LIMIT_BETWEEN_0_AND_1(*pLS->pfFeedback);
 
         loop->lLoopLength = srcloop->lLoopLength;
-        loop->pLoopStop = loop->pLoopStart + loop->lLoopLength;
+        for (unsigned c = 0; c < NUM_CHANNELS; c++)
+            loop->pLoopStop[c] = loop->pLoopStart[c] + loop->lLoopLength;
         loop->dCurrPos = srcloop->dCurrPos;
         loop->lStartAdj = 0;
         loop->lEndAdj = 0;

@@ -514,19 +514,21 @@ the smooth-ramp work above is built.
 instances and side buffers per chunk on `loopjefe-2x2`, not one
 stretcher fed `pLoopStart`'s interleaved L/R stream as if it were mono
 (the real, previously-unexercised bug this replaces).
-`ensureStretchCacheFilled` de-interleaves on the fly (stride
-`NUM_CHANNELS`) into a small stack buffer before feeding each channel's
-stretcher. Position bookkeeping (`lCacheLength`/`lCacheCapacity`/
-`lRenderPos`) stays shared and counts *per-channel frames*, not
-interleaved samples -- both channels are filled and read in lockstep off
+Since the planar-buffer refactor (`docs/planar-buffer-refactor.md`), each
+channel's audio is already a contiguous per-channel slab (`pLoopStart[c]`),
+so `ensureStretchCacheFilled` feeds `pLoopStart[c] + lRenderPos` straight to
+that channel's stretcher -- no de-interleave step, no scratch buffer.
+Position bookkeeping (`lCacheLength`/`lCacheCapacity`/
+`lRenderPos`) stays shared and counts *frames* (`lLoopLength` is now a frame
+count) -- both channels are filled and read in lockstep off
 one cursor ("two buffers, one cursor"); a private per-channel
 `lChanWritten[NUM_CHANNELS]` append-cursor prevents one channel's
 `retrieve()` calls from ever re-visiting (and clobbering) samples the
 other channel hasn't caught up to yet, in case Rubber Band's `available()`
 timing ever drifts between two independently-driven instances. The
 STATE_PLAY read site computes the shared cache frame position once per
-output sample (`dCurrPos / NUM_CHANNELS`, since `dCurrPos` advances in
-interleaved-sample space) rather than per channel, so both channels read
+output sample (`dCurrPos / stretchRatio`; `dCurrPos` now advances in frames
+directly) rather than per channel, so both channels read
 the same instant from their own buffer. `test_tempo_follow_stereo.cpp`
 (new, includes `loopjefe-2x2/src/loopjefe.cpp` directly -- no existing
 test drove the 2x2 bundle's stretch path before this) pins channel

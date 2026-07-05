@@ -16,9 +16,9 @@ static const unsigned long STRETCH_FEED_CHUNK = 256;
 // reset()s its internal buffers, so there's no cold-restart glitch. Only
 // cache bookkeeping is invalidated here; the side buffers grow via realloc
 // as needed but are never shrunk. All position bookkeeping here (capacity,
-// lRenderPos, lCacheLength) is in per-channel native frames, not interleaved
-// samples -- pLoopStart is interleaved (lLoopLength / NUM_CHANNELS frames),
-// but each channel's cache buffer is not. Sizes/resets but feeds no audio
+// lRenderPos, lCacheLength) is in frames -- with the planar layout
+// lLoopLength is already a frame count and pLoopStart[c] is one contiguous
+// per-channel slab, so no de-interleave is needed. Sizes/resets but feeds no audio
 // yet -- ensureStretchCacheFilled() does that. cached_bpm is set immediately
 // so the call site's guard only fires once per bpm change, not every block.
 static void startStretchCacheGeneration(LoopChunk *loop, double sample_rate, double target_bpm)
@@ -36,7 +36,7 @@ static void startStretchCacheGeneration(LoopChunk *loop, double sample_rate, dou
 
     double ratio = target_bpm / loop->recorded_bpm;
     double timeRatio = 1.0 / ratio;
-    unsigned long numFrames = loop->lLoopLength / NUM_CHANNELS;
+    unsigned long numFrames = loop->lLoopLength;
 
     unsigned long neededCapacity = (unsigned long) (numFrames / ratio) + 4096;
     if (neededCapacity > loop->lCacheCapacity) {
@@ -64,10 +64,10 @@ static void startStretchCacheGeneration(LoopChunk *loop, double sample_rate, dou
 
 // Top up the render cache just far enough to cover `neededIdx` (a
 // per-channel frame index), feeding each channel's stretcher in small
-// chunks rather than the whole loop at once. The native source is
-// de-interleaved on the fly (stride NUM_CHANNELS) into a small stack
-// buffer before feeding each channel's stretcher. Each channel retrieves
-// into its own append cursor (lChanWritten[c]); lCacheLength, the shared
+// chunks rather than the whole loop at once. With the planar layout each
+// channel's source is already a contiguous slab (pLoopStart[c]), fed
+// straight to that channel's stretcher with no de-interleave step. Each
+// channel retrieves into its own append cursor (lChanWritten[c]); lCacheLength, the shared
 // "safe to read" length, is the min across channels, so a channel that
 // happens to produce output faster than its sibling never has its extra
 // samples clobbered by a later feed. Once lRenderPos reaches the
@@ -77,8 +77,7 @@ static void ensureStretchCacheFilled(LoopChunk *loop, unsigned long neededIdx)
 {
     if (!loop->pStretcher[0] || !loop->pCacheStart[0]) return;
 
-    unsigned long numFrames = loop->lLoopLength / NUM_CHANNELS;
-    float deinterleaved[STRETCH_FEED_CHUNK];
+    unsigned long numFrames = loop->lLoopLength;
 
     while (loop->lCacheLength <= neededIdx && loop->lRenderPos < numFrames) {
         unsigned long chunk = numFrames - loop->lRenderPos;
@@ -86,11 +85,7 @@ static void ensureStretchCacheFilled(LoopChunk *loop, unsigned long neededIdx)
         bool final = (loop->lRenderPos + chunk >= numFrames);
 
         for (unsigned c = 0; c < NUM_CHANNELS; c++) {
-            for (unsigned long i = 0; i < chunk; i++) {
-                deinterleaved[i] = *(loop->pLoopStart
-                    + (loop->lRenderPos + i) * NUM_CHANNELS + c);
-            }
-            const float *in[1] = { deinterleaved };
+            const float *in[1] = { loop->pLoopStart[c] + loop->lRenderPos };
             loop->pStretcher[c]->process(in, chunk, final);
 
             int avail = loop->pStretcher[c]->available();

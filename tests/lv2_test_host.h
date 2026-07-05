@@ -308,21 +308,20 @@ struct PluginHost {
     float loop_sample(unsigned long idx)
     {
         LoopChunk *l = plugin()->pLS->headLoopChunk;
-        return l ? l->pLoopStart[idx] : 0.0f;
+        return l ? l->pLoopStart[0][idx] : 0.0f;
     }
 
     // Peek a recorded sample by (channel, frame), abstracting the buffer
-    // layout so value-asserting tests survive the interleaved->planar
-    // refactor. TODAY pLoopStart is a single interleaved slab, so frame f
-    // channel c lives at index f*NUM_CHANNELS + c. AFTER the planar
-    // refactor (pLoopStart becomes LADSPA_Data*[NUM_CHANNELS]), change the
-    // body to `l->pLoopStart[c][frame]`. This one accessor is the only
-    // place the stereo lifecycle tests touch the raw layout.
+    // layout so value-asserting tests are independent of it. Post planar
+    // refactor pLoopStart is LADSPA_Data*[NUM_CHANNELS] -- one contiguous
+    // per-channel slab -- so frame f of channel c is pLoopStart[c][f].
+    // This one accessor is the only place the stereo lifecycle tests touch
+    // the raw layout.
     float loop_sample_ch(unsigned c, unsigned long frame)
     {
         LoopChunk *l = plugin()->pLS->headLoopChunk;
         if (!l) return 0.0f;
-        return l->pLoopStart[frame * NUM_CHANNELS + c];
+        return l->pLoopStart[c][frame];
     }
 };
 

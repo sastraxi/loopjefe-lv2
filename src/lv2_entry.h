@@ -75,14 +75,25 @@ LV2_Handle SooperLooperPlugin::instantiate(const LV2_Descriptor* descriptor, dou
 
    pLS->fSampleRate = (LADSPA_Data)SampleRate;
 
-   // we do include the LoopChunk structures in the Buf, so we really
-   // get a little less the SAMPLE_MEMORY seconds
-   pLS->lBufferSize = (unsigned long)((LADSPA_Data)SampleRate * SAMPLE_MEMORY * sizeof(LADSPA_Data));
+   // One arena per channel (planar layout). Split the total sample-memory
+   // budget evenly across channels so the overall footprint is unchanged
+   // from the old single interleaved buffer. We include the LoopChunk
+   // structures in arena 0, so we really get a little less than
+   // SAMPLE_MEMORY/NUM_CHANNELS seconds of audio per channel.
+   {
+       unsigned long totalBytes =
+           (unsigned long)((LADSPA_Data)SampleRate * SAMPLE_MEMORY * sizeof(LADSPA_Data));
+       pLS->lBufferSize = totalBytes / NUM_CHANNELS;
+   }
 
-   pLS->pSampleBuf = (char*)calloc(pLS->lBufferSize, 1);
-   if (pLS->pSampleBuf == NULL) {
-      free(pLS);
-      return NULL;
+   for (unsigned c = 0; c < NUM_CHANNELS; c++) {
+       pLS->pSampleBuf[c] = (char*)calloc(pLS->lBufferSize, 1);
+       if (pLS->pSampleBuf[c] == NULL) {
+           for (unsigned d = 0; d < c; d++)
+               free(pLS->pSampleBuf[d]);
+           free(pLS);
+           return NULL;
+       }
    }
 
    /* just one for now */
@@ -104,12 +115,6 @@ LV2_Handle SooperLooperPlugin::instantiate(const LV2_Descriptor* descriptor, dou
     plugin->b1 = exp(-2.0 * M_PI * frequency);
     plugin->a0 = 1.0 - plugin->b1;
     plugin->dryVolumeCoef = 0.0;
-
-#if NUM_CHANNELS > 1
-    for (unsigned i = 0; i < TEMP_BUFFER_SIZE; i++) {
-        plugin->temp_buffer[i] = 0.0;
-    }
-#endif
 
     plugin->undoSet = false;
     plugin->redoSet = false;

@@ -24,11 +24,25 @@ headers in dependency (DAG) order. The domains:
 | `src/dsp_run.h` | `run()` — prologue + `runControlPorts()` call + DSP switch + tail (the integration point; includes all leaves) |
 | `src/lv2_entry.h` | `Descriptor`, `lv2_descriptor()`, instantiate/activate/deactivate/cleanup/extension_data |
 
-The bundle `.cpp` sets `NUM_CHANNELS` / `TEMP_BUFFER_SIZE` / `PLUGIN_URI` /
+The bundle `.cpp` sets `NUM_CHANNELS` / `PLUGIN_URI` /
 the port enum / `PLUGIN_AUDIO_PORT_COUNT` / `PLUGIN_CONTROL_PORT_COUNT`
 *before* `#include "../../src/shared.h"`; the domain headers all key off
 those preprocessor definitions. Edit any domain header once; both bundles
 recompile against it.
+
+### Audio buffer layout — planar
+
+Audio is stored **planar** (de-interleaved): one contiguous per-channel
+slab, `LoopChunk::pLoopStart[NUM_CHANNELS]` / `pLoopStop[NUM_CHANNELS]`,
+each pointing into its **own** bump-allocator arena
+(`SooperLooper::pSampleBuf[NUM_CHANNELS]`, one `calloc` per channel; headers
+live in arena 0). `dCurrPos`, `lLoopLength`, marks, and the adjustments all
+count **frames** (one unit per output frame), *not* interleaved samples;
+`dCurrPos += rate` happens once per frame, outside the `for (c)` channel
+loop. Mono is just `NUM_CHANNELS=1`. Index everything `pLoopStart[c][frame]`;
+DSP reads/writes go straight to the per-channel ports (`pfInputs[c]`/
+`pfOutputs[c]`) — no interleaving, no `temp_buffer`. See
+[[planar-arena-per-channel]] and `docs/planar-buffer-refactor.md`.
 
 | Dir | URI | Ports |
 |---|---|---|
@@ -118,9 +132,6 @@ over a coincident tap.
   preserves `dCurrPos` (via `undoLoop` handing it to `srcloop`, or by
   leaving it in place on force-close). Never phase-reset on commit or
   abort.
-- **Known 2x2 quirk**: its `STATE_RECORD_ARM` outer loop steps by
-  `NUM_CHANNELS` while indexing inputs by that stepped index
-  (inconsistent with `STATE_RECORD` below it). Pre-existing; leave as-is.
 - **Overdub write is `input + OVERDUB_DECAY * feedback * old`**
   (`OVERDUB_DECAY` = 1.0 by default: pure additive layering, matches the
   RC-505's OVERDUB "ensemble" mode). This is **not** a clipping guard —

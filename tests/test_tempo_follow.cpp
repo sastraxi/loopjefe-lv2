@@ -144,7 +144,7 @@ static void test_unity_ratio_bypasses_bit_identical()
     CHECK(loop != NULL);
     if (loop) {
         for (unsigned long i = 0; i < loop->lLoopLength; i++) {
-            if (captured[i] != *(loop->pLoopStart + i)) {
+            if (captured[i] != *(loop->pLoopStart[0] + i)) {
                 CHECK(false);   // bit-identical mismatch
                 break;
             }
@@ -189,7 +189,7 @@ static void test_no_anchor_never_stretches()
     CHECK(loop != NULL);
     if (loop) {
         for (unsigned long i = 0; i < loop->lLoopLength; i++) {
-            if (captured[i] != *(loop->pLoopStart + i)) {
+            if (captured[i] != *(loop->pLoopStart[0] + i)) {
                 CHECK(false);   // free-run should bypass, mismatch means it stretched
                 break;
             }
@@ -284,7 +284,7 @@ static void test_pitch_preserved_not_resample()
         for (uint32_t i = 0; i < BLK; i++) {
             unsigned long src_idx = (unsigned long) ((double) i * ratio);
             if (src_idx >= loop->lLoopLength) break;
-            float resample_val = *(loop->pLoopStart + src_idx);
+            float resample_val = *(loop->pLoopStart[0] + src_idx);
             if (fabs(h.out[i] - resample_val) > 1e-6f)
                 mismatches++;
         }

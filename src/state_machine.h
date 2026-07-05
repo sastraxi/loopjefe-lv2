@@ -221,12 +221,14 @@ void SooperLooperPlugin::runControlPorts(LoopChunk*& loop)
                         unsigned long filled = (unsigned long) loop->dCurrPos;
                         if (filled < target) {
                             for (unsigned long i = filled; i < target; i++) {
-                                *(loop->pLoopStart + i) = 0.0f;
+                                for (unsigned c = 0; c < NUM_CHANNELS; c++)
+                                    *(loop->pLoopStart[c] + i) = 0.0f;
                             }
                         }
                         loop->lLoopLength = target;
                         loop->lCycleLength = target;
-                        loop->pLoopStop = loop->pLoopStart + target;
+                        for (unsigned c = 0; c < NUM_CHANNELS; c++)
+                            loop->pLoopStop[c] = loop->pLoopStart[c] + target;
                         loop->dCurrPos = 0.0;
                         // Force-close keeps the take; sample recorded_bpm
                         // from the (validated-stable) capture_bpm.
@@ -287,7 +289,8 @@ void SooperLooperPlugin::runControlPorts(LoopChunk*& loop)
                         // locked to other tracks. No jump, no time-travel.
                         loop->lLoopLength = new_length;
                         loop->lCycleLength = new_length;
-                        loop->pLoopStop = loop->pLoopStart + new_length;
+                        for (unsigned c = 0; c < NUM_CHANNELS; c++)
+                            loop->pLoopStop[c] = loop->pLoopStart[c] + new_length;
                         loop->dCurrPos = fmod(recorded_length, (double) new_length);
                         // Sample the take's reference tempo at close so the
                         // stretch facet can compute ratio = current_bpm /
