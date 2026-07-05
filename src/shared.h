@@ -45,6 +45,7 @@
 #include <lv2/urid/urid.h>
 #include <lv2/time/time.h>
 #include <string.h>
+#include <rubberband/RubberBandStretcher.h>
 #if defined(__APPLE__) || defined(_WIN32)
 #define MAXLONG LONG_MAX
 #else
@@ -151,6 +152,22 @@ typedef struct _LoopChunk {
 
     // current position is double to support alternative rates easier
     double dCurrPos;
+
+    // Tempo-follow stretch facet (see docs/tempo-follow-plan.md).
+    // recorded_bpm is the host transport bpm sampled at the moment this
+    // chunk's capture closed. 0 = free-run / no anchor (bypass stretch).
+    // Lives per-chunk (not per-SooperLooper) because the undo/redo stack
+    // holds chunks captured at potentially different bpms; undo swaps
+    // which chunk is head, so it swaps which ratio is in force.
+    double recorded_bpm;
+
+    // Heap-allocated Rubber Band R3 state, created lazily on the first
+    // block that actually needs to stretch this chunk. Kept alive across
+    // undo/redo (so redo restores a warmed stretcher); only freed on the
+    // four destroy paths (see freeLoopChunkStretchers). NULL = not yet
+    // created. Can't be embedded inline in LoopChunk -- that would break
+    // the pLoopStart = loop + sizeof(LoopChunk) bump-allocator arithmetic.
+    RubberBand::RubberBandStretcher * pStretcher;
 
     // the loop where we should be frontfilled and backfilled from
     struct _LoopChunk* srcloop;
@@ -506,21 +523,27 @@ static int popHeadLoop(SooperLooper *pLS)
 }
 
 // clear all LoopChunks (undoAll , can still redo them back)
+//
+// This is the single reclaim point for heap-allocated per-chunk state
+// (the Rubber Band stretcher handles). The bump allocator in
+// pushNewLoopChunk never frees raw audio -- it lays chunks end-to-end in
+// pSampleBuf, and the next push after clearLoopChunks writes from the
+// start, overwriting old chunks. So head is only ever NULL here (or at
+// init), and no chunk is ever overwritten without its stretcher being
+// freed first. undoLoop/popHeadLoop intentionally do NOT free: the popped
+// chunk stays reachable via redoLoop, and its stretcher is retained for
+// redo-restore until the next clearLoopChunks. See
+// docs/tempo-follow-plan.md "Interaction with undo/redo".
 static void clearLoopChunks(SooperLooper *pLS)
 {
-    /*
-       LoopChunk *prev, *tmp;
-
-       prev = pLS->headLoopChunk;
-
-       while (prev)
-       {
-       tmp = prev->prev;
-       free(prev);
-       prev = tmp;
-       }
-       */
-
+    LoopChunk *loop = pLS->headLoopChunk;
+    while (loop) {
+        if (loop->pStretcher) {
+            delete loop->pStretcher;
+            loop->pStretcher = NULL;
+        }
+        loop = loop->prev;
+    }
     pLS->headLoopChunk = NULL;
 }
 
@@ -667,6 +690,11 @@ static LoopChunk * beginOverdub(SooperLooper *pLS, LoopChunk *loop)
         loop->lLoopLength = srcloop->lLoopLength;
         loop->pLoopStop = loop->pLoopStart + loop->lLoopLength;
         loop->dCurrPos = srcloop->dCurrPos;
+        // The layer plays at the source loop's reference tempo (it's the
+        // same audio, layered on top), so it inherits the source's
+        // recorded_bpm. See docs/tempo-follow-plan.md "Interaction with
+        // undo/redo".
+        loop->recorded_bpm = srcloop->recorded_bpm;
         loop->lStartAdj = 0;
         loop->lEndAdj = 0;
         pLS->nextState = -1;
@@ -1134,6 +1162,10 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                         loop->lCycleLength = target;
                         loop->pLoopStop = loop->pLoopStart + target;
                         loop->dCurrPos = 0.0;
+                        // Force-close keeps the take; sample recorded_bpm
+                        // from the (validated-stable) capture_bpm.
+                        loop->recorded_bpm = plugin->capture_bpm_set
+                            ? plugin->capture_bpm : 0.0;
                         pLS->lRampSamples = XFADE_SAMPLES;
                         pLS->state = STATE_PLAY;
                         plugin->surface_state = SURFACE_PLAYBACK;
@@ -1143,6 +1175,8 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                         // guard): close where we are.
                         if (loop) {
                             loop->dCurrPos = 0.0;
+                            loop->recorded_bpm = plugin->capture_bpm_set
+                                ? plugin->capture_bpm : 0.0;
                         }
                         pLS->state = STATE_PLAY;
                         plugin->surface_state = SURFACE_PLAYBACK;
@@ -1189,6 +1223,13 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                         loop->lCycleLength = new_length;
                         loop->pLoopStop = loop->pLoopStart + new_length;
                         loop->dCurrPos = fmod(recorded_length, (double) new_length);
+                        // Sample the take's reference tempo at close so the
+                        // stretch facet can compute ratio = current_bpm /
+                        // recorded_bpm on playback. capture_bpm was sampled
+                        // at arm and validated stable through the capture;
+                        // 0 means free-run / no anchor (stretch bypasses).
+                        loop->recorded_bpm = plugin->capture_bpm_set
+                            ? plugin->capture_bpm : 0.0;
                         plugin->pending_close_length = 0;
                         plugin->pLS->state = STATE_PLAY;
                         plugin->surface_state = SURFACE_PLAYBACK;
@@ -1198,6 +1239,10 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                         // behavior). Enter the explicit close-pending state;
                         // the surface stays RECORDING until STATE_RECORD_CLOSE
                         // reaches the boundary and closes the loop.
+                        // recorded_bpm is sampled at the actual close (in
+                        // STATE_RECORD_CLOSE), not here -- capture_bpm may
+                        // still change before the boundary (which would
+                        // abort via the tempo-change check).
                         plugin->pending_close_length = new_length;
                         plugin->pLS->state = STATE_RECORD_CLOSE;
                         // surface_state stays SURFACE_RECORDING
@@ -1207,6 +1252,9 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                     // raw recorded length, play from the loop start.
                     if (loop) {
                         loop->dCurrPos = 0.0;
+                        // No transport anchor in free-run -> stretch bypasses
+                        // (ratio undefined). recorded_bpm stays 0.
+                        loop->recorded_bpm = 0.0;
                     }
                     plugin->pending_close_length = 0;
                     plugin->pLS->state = STATE_PLAY;
@@ -1309,7 +1357,13 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
     }
 
     if (*(plugin->redo) > 0.0 && !plugin->redoSet) {
-        if(loop) {
+        // redoLoop handles two cases: head->next (redo an undone layer
+        // while a chunk still plays) or, when undo has drained the stack
+        // (headLoopChunk == NULL), tailLoopChunk (restart from the oldest
+        // chunk). The old `if(loop)` guard blocked the drained case because
+        // `loop` was captured from head before undo nulled it; guard on
+        // tailLoopChunk too so redo-from-empty works.
+        if (loop || pLS->tailLoopChunk) {
             redoLoop(pLS);
             plugin->pLS->state = STATE_PLAY;
             plugin->surface_state = SURFACE_PLAYBACK;
@@ -1485,6 +1539,9 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                             loop->pLoopStop = loop->pLoopStart + target;
                             loop->lCycles = 1;
                             loop->dCurrPos = 0.0;
+                            // Sample recorded_bpm at the actual close.
+                            loop->recorded_bpm = plugin->capture_bpm_set
+                                ? plugin->capture_bpm : 0.0;
                             pLS->lRampSamples = XFADE_SAMPLES;
                             pLS->state = STATE_PLAY;
                             plugin->surface_state = SURFACE_PLAYBACK;
@@ -1500,6 +1557,8 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                                 plugin->surface_state = SURFACE_PLAYBACK;
                                 plugin->pending_close_length = 0;
                                 loop->dCurrPos = 0.0;
+                                loop->recorded_bpm = plugin->capture_bpm_set
+                                    ? plugin->capture_bpm : 0.0;
                                 break;
                             }
 #if NUM_CHANNELS > 1

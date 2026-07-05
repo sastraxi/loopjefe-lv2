@@ -13,7 +13,9 @@ CXX ?= g++
 SAMPLE_MEMORY ?= 20
 
 CXXFLAGS += -I. -O2 -g -Wall -std=c++14 -DSAMPLE_MEMORY=$(SAMPLE_MEMORY) \
-            $(shell pkg-config --cflags lv2)
+            $(shell pkg-config --cflags lv2) \
+            $(shell pkg-config --cflags rubberband)
+LDFLAGS += $(shell pkg-config --libs rubberband)
 
 TESTS := $(patsubst %.cpp,%,$(wildcard test_*.cpp))
 
@@ -24,7 +26,7 @@ all: $(TESTS)
 ENGINE_SRC := lv2_test_host.h ../src/shared.h ../loopjefe/src/loopjefe.cpp
 
 test_%: test_%.cpp $(ENGINE_SRC)
-	$(CXX) $(CXXFLAGS) $< -o $@
+	$(CXX) $(CXXFLAGS) $< -o $@ $(LDFLAGS)
 
 check: $(TESTS)
 	@rc=0; \

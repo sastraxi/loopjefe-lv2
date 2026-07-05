@@ -185,6 +185,152 @@ static void test_second_tap_in_pending_force_closes()
     CHECK_EQ(h.loop_length(), 192000);          // rounded target kept
 }
 
+// recorded_bpm is sampled at close so the stretch facet can compute
+// ratio = current_bpm / recorded_bpm on playback. capture_bpm was sampled
+// at arm and validated stable through the capture; free-run leaves 0
+// (no anchor -> stretch bypasses). See docs/tempo-follow-plan.md.
+static void test_recorded_bpm_sampled_at_close()
+{
+    // Transport-anchored close (round-down): recorded_bpm = capture_bpm.
+    {
+        PluginHost h(SR);
+        record_blocks(h, 120);           // 1.25 bars -> round down to 1 bar
+        push_at(h, 120000);
+        h.tap(0);
+        CHECK_EQ(h.engine(), STATE_PLAY);
+        CHECK_EQ(h.recorded_bpm(), BPM);          // sampled from capture_bpm
+    }
+    // Round-up close (boundary reached in STATE_RECORD_CLOSE): same.
+    {
+        PluginHost h(SR);
+        record_blocks(h, 168);           // 1.75 bars -> round up to 2
+        push_at(h, 168000);
+        h.tap(0);
+        CHECK_EQ(h.engine(), STATE_RECORD_CLOSE);
+        CHECK(run_until_playback(h, 168000, /*cap=*/40));
+        CHECK_EQ(h.engine(), STATE_PLAY);
+        CHECK_EQ(h.recorded_bpm(), BPM);
+    }
+    // Force-close (second tap while close-pending): keeps the take, still
+    // samples recorded_bpm from the validated-stable capture_bpm.
+    {
+        PluginHost h(SR);
+        record_blocks(h, 168);
+        push_at(h, 168000);
+        h.tap(0);                        // enter close-pending
+        h.tap(0);                        // force-close now
+        CHECK_EQ(h.engine(), STATE_PLAY);
+        CHECK_EQ(h.recorded_bpm(), BPM);
+    }
+    // Free-run close (no transport): no anchor -> recorded_bpm stays 0
+    // (stretch bypasses, ratio undefined).
+    {
+        PluginHost h(SR);               // transport invalid
+        h.tap(BLK);                     // arm + capture immediately (free-run)
+        for (int k = 1; k < 96; k++)    // 1 bar of capture
+            h.run(BLK);
+        h.tap(0);                       // free-run close: state -> PLAY
+        CHECK_EQ(h.engine(), STATE_PLAY);
+        CHECK_EQ(h.recorded_bpm(), 0.0);
+    }
+}
+
+// undo/redo walks the chunk stack independently of reset; both force engine
+// STATE_PLAY and snap surface to Playback (or Empty if drained). The head
+// chunk's recorded_bpm comes with it -- undo restores the previous chunk's
+// reference tempo, redo restores the popped chunk's. See
+// docs/tempo-follow-plan.md "Interaction with undo/redo".
+//
+// We build a two-chunk stack so undo leaves a head to read (redo-from-empty
+// is a pre-existing bug with its own guard at run()'s redo block -- out of
+// scope here). The overdub layer inherits the source chunk's recorded_bpm
+// since both were captured at the same bpm; the cursor handoff is the
+// contract under test, not the bpm value itself.
+static void test_recorded_bpm_survives_undo_redo()
+{
+    PluginHost h(SR);
+    record_blocks(h, 96);               // 1 bar at 120 bpm
+    push_at(h, 96000);
+    h.tap(0);                          // close -> PLAY, recorded_bpm=120
+    CHECK_EQ(h.recorded_bpm(), BPM);
+
+    // Overdub a layer (reset from PLAYBACK arms, wrap captures, advance
+    // commits, second advance force-closes). The layer chunk inherits the
+    // source's recorded_bpm at close.
+    h.pulse_reset();                   // PLAYBACK -> OVERDUB_ARM
+    for (int k = 0; k < 96; k++)       // play one loop wrap to capture + wrap
+        h.run(BLK);
+    h.pulse_advance();                 // commit -> OVERDUB_CLOSE
+    h.pulse_advance();                // force-close -> PLAYBACK
+    CHECK_EQ(h.engine(), STATE_PLAY);
+    CHECK_EQ(h.recorded_bpm(), BPM);          // layer keeps the source bpm
+
+    // undo pops the layer -> head is the base chunk, same recorded_bpm.
+    h.pulse_undo();
+    CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
+    CHECK_EQ(h.recorded_bpm(), BPM);          // base chunk's bpm restored
+
+    // redo brings the layer back; its recorded_bpm comes with it.
+    h.pulse_redo();
+    CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
+    CHECK_EQ(h.recorded_bpm(), BPM);          // layer's bpm restored
+}
+
+// Stretcher handles are heap-allocated per chunk, created lazily on the
+// first stretched block. No stretch path exists yet, so pStretcher must
+// stay NULL through the entire record lifecycle. clearLoopChunks is the
+// single free path; undo/popHeadLoop never free (redo restores a warmed
+// stretcher). This pins the lifetime contract from the plan so a future
+// stretch path can rely on it.
+static void test_stretcher_null_until_stretch_path()
+{
+    PluginHost h(SR);
+    record_blocks(h, 96);               // 1 bar
+    push_at(h, 96000);
+    h.tap(0);                          // close -> PLAY
+    CHECK_EQ(h.engine(), STATE_PLAY);
+    CHECK_EQ(h.stretcher(), (void*)NULL);      // no stretch path yet
+
+    // undo drains, redo restores -- still NULL (never created).
+    h.pulse_undo();
+    CHECK_EQ(h.stretcher(), (void*)NULL);      // head NULL
+    h.pulse_redo();
+    CHECK_EQ(h.stretcher(), (void*)NULL);
+
+    // Delete-all is two presses now (Playback -> advance -> Stopped ->
+    // reset -> Empty), since reset-from-Playback arms overdub rather than
+    // deleting. See docs/state-machine-redesign.md §4.1.
+    h.pulse_advance();                    // PLAYBACK -> STOPPED
+    CHECK_EQ(h.surface(), SURFACE_STOPPED);
+    h.pulse_reset();                      // STOPPED -> EMPTY (clearLoopChunks)
+    CHECK_EQ(h.surface(), SURFACE_EMPTY);
+    CHECK_EQ(h.stretcher(), (void*)NULL);
+}
+
+// redo-from-empty: after undoing the only chunk (head becomes NULL, stack
+// drained to Empty), redo must restore it. redoLoop handles this via
+// tailLoopChunk, but run()'s redo block guards on `if(loop)` where loop was
+// captured before undo drained -- so the guard blocks redoLoop from ever
+// running. This pins the fix: redo from a drained stack restores the chunk
+// and lands on PLAYBACK.
+static void test_redo_from_empty()
+{
+    PluginHost h(SR);
+    record_blocks(h, 96);               // 1 bar at 120 bpm
+    push_at(h, 96000);
+    h.tap(0);                          // close -> PLAYBACK
+    CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
+    CHECK_EQ(h.recorded_bpm(), BPM);
+
+    h.pulse_undo();                     // undo drains the stack -> Empty
+    CHECK_EQ(h.surface(), SURFACE_EMPTY);
+    CHECK_EQ(h.recorded_bpm(), 0.0);   // head is NULL
+
+    h.pulse_redo();                     // redo restores the chunk -> PLAYBACK
+    CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
+    CHECK_EQ(h.recorded_bpm(), BPM);    // chunk + its bpm restored
+}
+
 int main()
 {
     test_start_snaps_to_downbeat();
@@ -195,5 +341,9 @@ int main()
     test_sub_half_measure_discards();
     test_playback_stays_grid_locked();
     test_second_tap_in_pending_force_closes();
+    test_recorded_bpm_sampled_at_close();
+    test_recorded_bpm_survives_undo_redo();
+    test_stretcher_null_until_stretch_path();
+    test_redo_from_empty();
     return test_summary("test_record_lifecycle");
 }

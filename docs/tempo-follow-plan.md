@@ -130,8 +130,8 @@ The existing chunk stack is *mostly* stretch-ready, with three joints:
    leaving a half-captured buffer at a stale bpm; the chunk is never
    re-stretched to a new bpm after capture).
 
-3. **Stretcher lifetime vs the bump allocator — new destroy paths.**
-   `pushNewLoopChunk` lays raw audio end-to-end in one `pSampleBuf`;
+3. **Stretcher lifetime vs the bump allocator — one free path.**
+   `pushNewLoopChunk` lays raw audio end-to-end in one `pSampleBuf`.
    `popHeadLoop` (undo) and `clearLoopChunks` just move the head pointer
    back and never free anything, by design (so redo can restore). But a
    `RubberBandState` is heap-allocated and non-trivially sized. So:
@@ -140,18 +140,26 @@ The existing chunk stack is *mostly* stretch-ready, with three joints:
      shared.h:460,473.
    - It must be a `RubberBandState*` pointer field on the chunk.
    - It must be **kept alive across undo** (don't free on undo, so redo
-     restores the warmed state) — only freed when the buffer region is
-     actually reclaimed.
-   - Since the bump allocator never reclaims, **stretchers leak unless
-     an explicit free path is added** on the four destroy transitions:
-     `clearLoopChunks` (delete-all / Empty arm / record abort),
-     sub-½-measure discard at record commit, tempo-change abort
-     (Recording family), tempo-change abort (Overdub family). Freeing
-     the stretcher on those paths is a new code path, not in the
-     original plan.
+     restores the warmed state). `undoLoop`/`popHeadLoop` never free
+     the stretcher — the popped chunk stays reachable via `redoLoop`,
+     so its stretcher is retained and freed later at the next
+     `clearLoopChunks`.
+   - The single free path is **`clearLoopChunks`**: walk the chunk list
+     and free each stretcher before nulling the head. This one site
+     covers all four destroy transitions, because three of them
+     (`clearLoopChunks` on delete-all / record abort / sub-½-measure
+     discard, tempo-abort Recording family) route through
+     `clearLoopChunks`, and the fourth (tempo-abort Overdub family)
+     pops via `undoLoop` which intentionally retains the chunk for redo
+     — its stretcher is freed at the next `clearLoopChunks`.
+   - Why `clearLoopChunks` is the real reclaim point: after it nulls
+     the head, the next `pushNewLoopChunk` writes to `pSampleBuf` from
+     the start, overwriting old chunks. Head is only ever NULL after
+     `clearLoopChunks` (or initial state), so no chunk is ever
+     overwritten without its stretcher being freed first.
 
   `undoLoop` itself must **not** free the stretcher — redo restores the
-  chunk and the warmed stretcher state. Only the four destroy paths free.
+  chunk and the warmed stretcher state. Only `clearLoopChunks` frees.
 
 ## Render cache (future)
 

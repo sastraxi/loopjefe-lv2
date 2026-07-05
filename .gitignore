@@ -10,3 +10,6 @@
 *.lai
 *.la
 *.a
+
+# macOS debug-symbol bundles (emitted by -g builds)
+*.dSYM/

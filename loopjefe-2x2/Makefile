@@ -22,6 +22,11 @@ else
 CXXFLAGS += $(shell pkg-config --cflags lv2)
 endif
 
+# Tempo-follow stretch (see docs/tempo-follow-plan.md). Rubber Band R3
+# real-time, baked in. GPL — whole stack is GPL.
+CXXFLAGS += $(shell pkg-config --cflags rubberband)
+LDFLAGS += $(shell pkg-config --libs rubberband)
+
 # remove command
 RM = rm -f
 

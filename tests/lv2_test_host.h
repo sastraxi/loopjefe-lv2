@@ -222,6 +222,27 @@ struct PluginHost {
         plugin()->resetSet = false;
     }
 
+    // Trigger undo/redo momentary ports, same edge-triggered shape as reset
+    // (>0.0 rising edge, latched by undoSet/redoSet). Unlike advance/reset,
+    // the engine does NOT self-clear the undo/redo ports (no pprops:trigger),
+    // so the helper must reset the field to 0 after run() to re-arm the edge
+    // -- otherwise the next run() re-fires. Clears the latch too, matching
+    // the pulse_advance() ergonomics.
+    void pulse_undo(uint32_t nframes = 256)
+    {
+        undo = 1.0f;
+        run(nframes);
+        undo = 0.0f;
+        plugin()->undoSet = false;
+    }
+    void pulse_redo(uint32_t nframes = 256)
+    {
+        redo = 1.0f;
+        run(nframes);
+        redo = 0.0f;
+        plugin()->redoSet = false;
+    }
+
     /* readouts */
     int  surface() { return plugin()->surface_state; }
     int  engine()  { return plugin()->pLS->state; }
@@ -244,6 +265,20 @@ struct PluginHost {
     {
         LoopChunk *l = plugin()->pLS->headLoopChunk;
         return l ? l->srcloop : NULL;
+    }
+    // Reference tempo sampled at the moment this chunk's capture closed.
+    // 0 = free-run / no anchor (stretch bypasses). See docs/tempo-follow-plan.md.
+    double recorded_bpm()
+    {
+        LoopChunk *l = plugin()->pLS->headLoopChunk;
+        return l ? l->recorded_bpm : 0.0;
+    }
+    // Per-chunk Rubber Band state (NULL until the first stretched block;
+    // tests assert it stays NULL since no stretch path exists yet).
+    void *stretcher()
+    {
+        LoopChunk *l = plugin()->pLS->headLoopChunk;
+        return l ? (void *) l->pStretcher : NULL;
     }
 };
 
