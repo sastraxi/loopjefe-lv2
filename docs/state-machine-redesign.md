@@ -107,7 +107,10 @@ The 50%-rounding rule (nearest measure, <½ measure → discard) applies **only
 to record commit**. Overdub commit has no rounding — the loop length is fixed
 by the source. Overdub commit quantizes to the next loop wrap (RC-505
 stop-quantize behavior); a second advance force-closes early for the player
-who overlaid 1 bar of an 8-bar loop and doesn't want to wait 7 more.
+who overlaid 1 bar of an 8-bar loop and doesn't want to wait 7 more. There is
+no "50% of the existing loop" threshold for overdub — the second-advance
+escape hatch replaces it. The player decides when "long enough" is, not a
+hardcoded cutoff.
 
 ## 6. Implementation notes
 
