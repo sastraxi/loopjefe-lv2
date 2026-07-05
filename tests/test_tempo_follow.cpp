@@ -355,7 +355,7 @@ static void test_ratio_below_floor_skips_cache()
     h.out.assign(BLK, 0.0f);
     h.run(BLK);
 
-    CHECK(loop->pCacheStart == NULL);
+    CHECK(loop->pCacheStart[0] == NULL);
     CHECK_EQ(loop->cached_bpm, 0.0);
 }
 
@@ -380,7 +380,7 @@ static void test_ratio_change_keeps_same_stretcher_instance()
     h.out.assign(BLK, 0.0f);
     h.run(BLK);
 
-    RubberBand::RubberBandStretcher *first = loop->pStretcher;
+    RubberBand::RubberBandStretcher *first = loop->pStretcher[0];
     CHECK(first != NULL);
 
     push_at(h, (double) BLK, /*bpm=*/160.0);
@@ -388,7 +388,7 @@ static void test_ratio_change_keeps_same_stretcher_instance()
     h.out.assign(BLK, 0.0f);
     h.run(BLK);
 
-    CHECK(loop->pStretcher == first);
+    CHECK(loop->pStretcher[0] == first);
     CHECK_EQ(loop->cached_bpm, 160.0);
 }
 

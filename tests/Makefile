@@ -22,8 +22,11 @@ TESTS := $(patsubst %.cpp,%,$(wildcard test_*.cpp))
 all: $(TESTS)
 
 # Depend on the engine sources too: each test #includes loopjefe.cpp, which
-# includes shared.h, so a change there must force a rebuild.
-ENGINE_SRC := lv2_test_host.h ../src/shared.h ../loopjefe/src/loopjefe.cpp
+# includes shared.h, so a change there must force a rebuild. Both bundles'
+# loopjefe.cpp are listed since test_tempo_follow_stereo.cpp includes the
+# 2x2 one (the only test that does).
+ENGINE_SRC := lv2_test_host.h ../src/shared.h \
+              ../loopjefe/src/loopjefe.cpp ../loopjefe-2x2/src/loopjefe.cpp
 
 test_%: test_%.cpp $(ENGINE_SRC)
 	$(CXX) $(CXXFLAGS) $< -o $@ $(LDFLAGS)

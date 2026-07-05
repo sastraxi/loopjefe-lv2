@@ -44,12 +44,15 @@ a plain resample.
 
 **Not started (⚑ — all design-only):**
 1. **Latency compensation** — `test_latency_comp.cpp`
-2. **Stereo channels / allocation strategy** — two related decisions,
-   not yet wired into `src/shared.h` (see "Render cache" → "Stereo
-   channels", "Allocation strategy"): two single-channel
-   buffers/stretchers per chunk for 2x2 instead of one fed an
-   interleaved stream; `pCacheStart` stays dynamically
-   malloc'd/realloc'd on demand (confirmed, not changed).
+
+**Done (✓ in code), continued:**
+- **Stereo channels (2x2 render cache)** — `test_tempo_follow_stereo.cpp`
+  (new file, first test to exercise the 2x2 bundle's stretch path at
+  all). `pStretcher`/`pCacheStart` became `[NUM_CHANNELS]` arrays; see
+  "Render cache" → "Stereo channels" for the full writeup, including two
+  unrelated pre-existing bugs (a `pushNewLoopChunk` pointer-arithmetic
+  bug, a NaN-safety check) that surfaced/were verified while building
+  this.
 
 **Done (✓ in code), continued:**
 - **Persistent stretcher across ratio changes** — `test_tempo_follow.cpp`
@@ -503,15 +506,49 @@ currently means falling back to the existing bypass/resample path, *not*
 true pitch-preserving live stretch — that mechanism doesn't exist until
 the smooth-ramp work above is built.
 
-**Stereo channels (⚑ decided, not yet wired in code).** The cache as
-currently coded assumes single-channel audio and doesn't handle
-`NUM_CHANNELS` at all — on `loopjefe-2x2`, `pLoopStart` is interleaved
-stereo, and today's `pStretcher`/`pCacheStart` treat that interleaved
-buffer as if it were one channel (a real gap, not yet hit because no
-test exercises 2x2 tempo-follow). Decision: two independent single-channel
-buffers/stretchers per chunk (one per channel), driven off the same
-native-buffer pointers with a stride of `NUM_CHANNELS` — not one
-stretcher fed an interleaved stream.
+**Stereo channels (✓ in code, `test_tempo_follow_stereo.cpp`).**
+`pStretcher` and `pCacheStart` are now `[NUM_CHANNELS]` arrays on
+`LoopChunk` -- two independent single-channel `RubberBandStretcher`
+instances and side buffers per chunk on `loopjefe-2x2`, not one
+stretcher fed `pLoopStart`'s interleaved L/R stream as if it were mono
+(the real, previously-unexercised bug this replaces).
+`ensureStretchCacheFilled` de-interleaves on the fly (stride
+`NUM_CHANNELS`) into a small stack buffer before feeding each channel's
+stretcher. Position bookkeeping (`lCacheLength`/`lCacheCapacity`/
+`lRenderPos`) stays shared and counts *per-channel frames*, not
+interleaved samples -- both channels are filled and read in lockstep off
+one cursor ("two buffers, one cursor"); a private per-channel
+`lChanWritten[NUM_CHANNELS]` append-cursor prevents one channel's
+`retrieve()` calls from ever re-visiting (and clobbering) samples the
+other channel hasn't caught up to yet, in case Rubber Band's `available()`
+timing ever drifts between two independently-driven instances. The
+STATE_PLAY read site computes the shared cache frame position once per
+output sample (`dCurrPos / NUM_CHANNELS`, since `dCurrPos` advances in
+interleaved-sample space) rather than per channel, so both channels read
+the same instant from their own buffer. `test_tempo_follow_stereo.cpp`
+(new, includes `loopjefe-2x2/src/loopjefe.cpp` directly -- no existing
+test drove the 2x2 bundle's stretch path before this) pins channel
+independence by recording a real tone on L and silence on R: after a
+non-unity-ratio stretch, R must stay exactly silent, which would fail
+under the old single-buffer mono-downmix behavior.
+
+Two real, unrelated bugs surfaced and were fixed while building this:
+1. `pushNewLoopChunk`'s `loop->pLoopStart = (LADSPA_Data *)(loop + sizeof(LoopChunk))`
+   added `sizeof(LoopChunk)` *structs* (not bytes) past `loop`, since
+   `loop` is typed `LoopChunk*` -- a pre-existing bug (the correct,
+   byte-cast version already existed three lines up in the same
+   function's bounds check). It was silently harmless before because the
+   huge fixed overshoot always happened to land in unused buffer space;
+   growing `LoopChunk` by adding the stereo array fields shifted that
+   overshoot just enough to corrupt adjacent chunk data, surfacing as a
+   garbage (non-NULL) `pStretcher[0]` in `test_record_lifecycle.cpp`.
+   Fixed by casting to `char*` before the addition.
+2. NaN safety was checked explicitly given the persistent-stretcher
+   change reuses one instance across ratio changes instead of a fresh
+   one each time -- see `test_wide_ratio_swings_never_produce_nan` in
+   `test_tempo_follow.cpp`; no unguarded division exists in the stretch
+   path (`MIN_STRETCH_RATIO` and the `recorded_bpm`/`transport_bpm` > 0
+   checks already required to enter it prevent a zero denominator).
 
 **Allocation strategy (⚑ decided, confirmed as already the design).**
 `pCacheStart` is malloc'd/realloc'd on demand (`startStretchCacheGeneration`),

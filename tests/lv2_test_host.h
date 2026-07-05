@@ -94,6 +94,9 @@ struct PluginHost {
     float state = 0, advance = 0, reset = 0, undo = 0, redo = 0, dry_level = 1.0f;
     // audio ports
     std::vector<float> in, out;
+#if NUM_CHANNELS > 1
+    std::vector<float> in_1, out_1;
+#endif
     // time:Position atom sequence buffer (connected to TIME_INFO)
     std::vector<uint8_t> time_buf;
 
@@ -118,6 +121,10 @@ struct PluginHost {
 
         in.assign(max_block, 0.0f);
         out.assign(max_block, 0.0f);
+#if NUM_CHANNELS > 1
+        in_1.assign(max_block, 0.0f);
+        out_1.assign(max_block, 0.0f);
+#endif
         time_buf.assign(2048, 0);
 
         lv2_atom_forge_init(&forge, &map);
@@ -142,6 +149,10 @@ struct PluginHost {
     {
         SooperLooperPlugin::connect_port(handle, IN_0,      in.data());
         SooperLooperPlugin::connect_port(handle, OUT_0,    out.data());
+#if NUM_CHANNELS > 1
+        SooperLooperPlugin::connect_port(handle, IN_1,      in_1.data());
+        SooperLooperPlugin::connect_port(handle, OUT_1,    out_1.data());
+#endif
         SooperLooperPlugin::connect_port(handle, STATE,    &state);
         SooperLooperPlugin::connect_port(handle, ADVANCE,  &advance);
         SooperLooperPlugin::connect_port(handle, RESET,    &reset);
@@ -285,7 +296,7 @@ struct PluginHost {
     void *stretcher()
     {
         LoopChunk *l = plugin()->pLS->headLoopChunk;
-        return l ? (void *) l->pStretcher : NULL;
+        return l ? (void *) l->pStretcher[0] : NULL;
     }
 
     // Drive a constant input value for the next run() calls.

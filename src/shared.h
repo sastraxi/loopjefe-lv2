@@ -197,26 +197,39 @@ typedef struct _LoopChunk {
     double anchor_beat;
     double loop_beats;
 
-    // Heap-allocated Rubber Band R3 state, created lazily on the first
-    // block that actually needs to stretch this chunk. Kept alive across
-    // undo/redo (so redo restores a warmed stretcher); only freed on the
-    // four destroy paths (see freeLoopChunkStretchers). NULL = not yet
-    // created. Can't be embedded inline in LoopChunk -- that would break
-    // the pLoopStart = loop + sizeof(LoopChunk) bump-allocator arithmetic.
-    RubberBand::RubberBandStretcher * pStretcher;
+    // Heap-allocated Rubber Band R3 state, one instance per audio channel
+    // (pLoopStart is interleaved, so stereo needs its own stretcher per
+    // channel rather than one fed an interleaved stream -- see
+    // docs/tempo-follow-plan.md "Stereo channels"). Created lazily on the
+    // first block that actually needs to stretch this chunk. Kept alive
+    // across undo/redo (so redo restores a warmed stretcher); only freed
+    // on the destroy paths (see clearLoopChunks). NULL = not yet created.
+    // Can't be embedded inline in LoopChunk -- that would break the
+    // pLoopStart = loop + sizeof(LoopChunk) bump-allocator arithmetic.
+    RubberBand::RubberBandStretcher * pStretcher[NUM_CHANNELS];
 
     // Render-cache bridge (see docs/tempo-follow-plan.md "Render cache"):
-    // a side buffer holding this chunk's audio pitch-preserved and
-    // time-stretched to `cached_bpm` (0 = empty/stale). Filled a sliver
-    // at a time by ensureStretchCacheFilled() as the playhead needs it,
-    // not all at once; lRenderPos tracks how much of the native buffer
-    // has been fed so far. Freed alongside pStretcher on the same four
-    // destroy paths.
+    // one side buffer per channel, each holding this chunk's audio
+    // pitch-preserved and time-stretched to `cached_bpm` (0 = empty/stale),
+    // non-interleaved. Both channels are filled and read in lockstep, so
+    // the position bookkeeping (lCacheLength/lCacheCapacity/lRenderPos,
+    // counted in per-channel frames, not interleaved samples) stays
+    // shared across the two buffers/stretchers -- "two buffers, one
+    // cursor". Filled a sliver at a time by ensureStretchCacheFilled() as
+    // the playhead needs it, not all at once. Freed alongside pStretcher
+    // on the same destroy paths.
     double cached_bpm;
-    LADSPA_Data * pCacheStart;
+    LADSPA_Data * pCacheStart[NUM_CHANNELS];
     unsigned long lCacheLength;
     unsigned long lCacheCapacity;
     unsigned long lRenderPos;
+    // Per-channel append cursor into pCacheStart[c] (retrieve() output is
+    // pulled from each channel's stretcher independently, so one channel
+    // can end up momentarily ahead of the other within a single feed --
+    // this tracks each channel's own write position so a later feed never
+    // re-visits and overwrites already-fetched samples). lCacheLength
+    // (the publicly-read "how much is safe to play") is the min of these.
+    unsigned long lChanWritten[NUM_CHANNELS];
 
     // the loop where we should be frontfilled and backfilled from
     struct _LoopChunk* srcloop;
@@ -539,12 +552,15 @@ static inline double phaseMapPhase01(double abs_beats_now, double anchor_beat, d
 
 static const unsigned long STRETCH_FEED_CHUNK = 256;
 
-// (Re)start the render-cache generation for `target_bpm`. The stretcher
-// instance itself is kept alive across ratio changes (only the four hard
-// destroy paths delete it) -- a mid-ramp bpm change just calls setTimeRatio()
-// and reset()s its internal buffers, so there's no cold-restart glitch.
-// Only cache bookkeeping is invalidated here; the side buffer grows via
-// realloc as needed but is never shrunk. Sizes/resets but feeds no audio
+// (Re)start the render-cache generation for `target_bpm`. Each channel's
+// stretcher instance is kept alive across ratio changes (only the destroy
+// paths delete it) -- a mid-ramp bpm change just calls setTimeRatio() and
+// reset()s its internal buffers, so there's no cold-restart glitch. Only
+// cache bookkeeping is invalidated here; the side buffers grow via realloc
+// as needed but are never shrunk. All position bookkeeping here (capacity,
+// lRenderPos, lCacheLength) is in per-channel native frames, not interleaved
+// samples -- pLoopStart is interleaved (lLoopLength / NUM_CHANNELS frames),
+// but each channel's cache buffer is not. Sizes/resets but feeds no audio
 // yet -- ensureStretchCacheFilled() does that. cached_bpm is set immediately
 // so the call site's guard only fires once per bpm change, not every block.
 static void startStretchCacheGeneration(LoopChunk *loop, double sample_rate, double target_bpm)
@@ -552,6 +568,9 @@ static void startStretchCacheGeneration(LoopChunk *loop, double sample_rate, dou
     loop->lCacheLength = 0;
     loop->lRenderPos = 0;
     loop->cached_bpm = 0.0;
+    for (unsigned c = 0; c < NUM_CHANNELS; c++) {
+        loop->lChanWritten[c] = 0;
+    }
 
     if (loop->recorded_bpm <= 0.0 || loop->lLoopLength == 0 || target_bpm <= 0.0) {
         return;
@@ -559,55 +578,83 @@ static void startStretchCacheGeneration(LoopChunk *loop, double sample_rate, dou
 
     double ratio = target_bpm / loop->recorded_bpm;
     double timeRatio = 1.0 / ratio;
+    unsigned long numFrames = loop->lLoopLength / NUM_CHANNELS;
 
-    unsigned long neededCapacity = (unsigned long) (loop->lLoopLength / ratio) + 4096;
+    unsigned long neededCapacity = (unsigned long) (numFrames / ratio) + 4096;
     if (neededCapacity > loop->lCacheCapacity) {
-        loop->pCacheStart = (LADSPA_Data *) realloc(loop->pCacheStart,
-            neededCapacity * sizeof(LADSPA_Data));
+        for (unsigned c = 0; c < NUM_CHANNELS; c++) {
+            loop->pCacheStart[c] = (LADSPA_Data *) realloc(loop->pCacheStart[c],
+                neededCapacity * sizeof(LADSPA_Data));
+        }
         loop->lCacheCapacity = neededCapacity;
     }
 
-    if (!loop->pStretcher) {
-        loop->pStretcher = new RubberBand::RubberBandStretcher((size_t) sample_rate, 1,
-            RubberBand::RubberBandStretcher::OptionProcessRealTime
-                | RubberBand::RubberBandStretcher::OptionEngineFiner
-                | RubberBand::RubberBandStretcher::OptionWindowShort);
-    } else {
-        loop->pStretcher->reset();
+    for (unsigned c = 0; c < NUM_CHANNELS; c++) {
+        if (!loop->pStretcher[c]) {
+            loop->pStretcher[c] = new RubberBand::RubberBandStretcher((size_t) sample_rate, 1,
+                RubberBand::RubberBandStretcher::OptionProcessRealTime
+                    | RubberBand::RubberBandStretcher::OptionEngineFiner
+                    | RubberBand::RubberBandStretcher::OptionWindowShort);
+        } else {
+            loop->pStretcher[c]->reset();
+        }
+        loop->pStretcher[c]->setTimeRatio(timeRatio);
     }
-    loop->pStretcher->setTimeRatio(timeRatio);
 
     loop->cached_bpm = target_bpm;
 }
 
-// Top up the render cache just far enough to cover `neededIdx`, feeding
-// the stretcher in small chunks rather than the whole loop at once. Once
-// lRenderPos reaches lLoopLength the generation is complete and every
-// later wrap is a pure read.
+// Top up the render cache just far enough to cover `neededIdx` (a
+// per-channel frame index), feeding each channel's stretcher in small
+// chunks rather than the whole loop at once. The native source is
+// de-interleaved on the fly (stride NUM_CHANNELS) into a small stack
+// buffer before feeding each channel's stretcher. Each channel retrieves
+// into its own append cursor (lChanWritten[c]); lCacheLength, the shared
+// "safe to read" length, is the min across channels, so a channel that
+// happens to produce output faster than its sibling never has its extra
+// samples clobbered by a later feed. Once lRenderPos reaches the
+// per-channel frame count, the generation is complete and every later
+// wrap is a pure read.
 static void ensureStretchCacheFilled(LoopChunk *loop, unsigned long neededIdx)
 {
-    if (!loop->pStretcher || !loop->pCacheStart) return;
+    if (!loop->pStretcher[0] || !loop->pCacheStart[0]) return;
 
-    while (loop->lCacheLength <= neededIdx && loop->lRenderPos < loop->lLoopLength) {
-        unsigned long chunk = loop->lLoopLength - loop->lRenderPos;
+    unsigned long numFrames = loop->lLoopLength / NUM_CHANNELS;
+    float deinterleaved[STRETCH_FEED_CHUNK];
+
+    while (loop->lCacheLength <= neededIdx && loop->lRenderPos < numFrames) {
+        unsigned long chunk = numFrames - loop->lRenderPos;
         if (chunk > STRETCH_FEED_CHUNK) chunk = STRETCH_FEED_CHUNK;
-        bool final = (loop->lRenderPos + chunk >= loop->lLoopLength);
+        bool final = (loop->lRenderPos + chunk >= numFrames);
 
-        const float *in[1] = { loop->pLoopStart + loop->lRenderPos };
-        loop->pStretcher->process(in, chunk, final);
+        for (unsigned c = 0; c < NUM_CHANNELS; c++) {
+            for (unsigned long i = 0; i < chunk; i++) {
+                deinterleaved[i] = *(loop->pLoopStart
+                    + (loop->lRenderPos + i) * NUM_CHANNELS + c);
+            }
+            const float *in[1] = { deinterleaved };
+            loop->pStretcher[c]->process(in, chunk, final);
+
+            int avail = loop->pStretcher[c]->available();
+            while (avail > 0 && loop->lChanWritten[c] < loop->lCacheCapacity) {
+                unsigned long space = loop->lCacheCapacity - loop->lChanWritten[c];
+                size_t want = (size_t) avail;
+                if (want > space) want = space;
+                float *outs[1] = { loop->pCacheStart[c] + loop->lChanWritten[c] };
+                size_t got = loop->pStretcher[c]->retrieve(outs, want);
+                if (got == 0) break;
+                loop->lChanWritten[c] += got;
+                avail = loop->pStretcher[c]->available();
+            }
+        }
+
         loop->lRenderPos += chunk;
 
-        int avail = loop->pStretcher->available();
-        while (avail > 0 && loop->lCacheLength < loop->lCacheCapacity) {
-            unsigned long space = loop->lCacheCapacity - loop->lCacheLength;
-            size_t want = (size_t) avail;
-            if (want > space) want = space;
-            float *outs[1] = { loop->pCacheStart + loop->lCacheLength };
-            size_t got = loop->pStretcher->retrieve(outs, want);
-            if (got == 0) break;
-            loop->lCacheLength += got;
-            avail = loop->pStretcher->available();
+        unsigned long minWritten = loop->lChanWritten[0];
+        for (unsigned c = 1; c < NUM_CHANNELS; c++) {
+            if (loop->lChanWritten[c] < minWritten) minWritten = loop->lChanWritten[c];
         }
+        loop->lCacheLength = minWritten;
     }
 }
 
@@ -636,7 +683,7 @@ static LoopChunk * pushNewLoopChunk(SooperLooper* pLS, unsigned long initLength)
         loop->prev->next = loop;
 
         // the loop data actually starts directly following this struct
-        loop->pLoopStart = (LADSPA_Data *) (loop + sizeof(LoopChunk));
+        loop->pLoopStart = (LADSPA_Data *) ((char *) loop + sizeof(LoopChunk));
 
         // the stop will be filled in later
 
@@ -649,17 +696,20 @@ static LoopChunk * pushNewLoopChunk(SooperLooper* pLS, unsigned long initLength)
         loop = (LoopChunk *) pLS->pSampleBuf;
         loop->next = loop->prev = NULL;
         pLS->headLoopChunk = pLS->tailLoopChunk = loop;
-        loop->pLoopStart = (LADSPA_Data *) (loop + sizeof(LoopChunk));
+        loop->pLoopStart = (LADSPA_Data *) ((char *) loop + sizeof(LoopChunk));
     }
 
     // raw bump-allocated memory -- pointer fields must be explicitly
     // zeroed, they don't come back as NULL for free.
-    loop->pStretcher = NULL;
     loop->cached_bpm = 0.0;
-    loop->pCacheStart = NULL;
     loop->lCacheLength = 0;
     loop->lCacheCapacity = 0;
     loop->lRenderPos = 0;
+    for (unsigned c = 0; c < NUM_CHANNELS; c++) {
+        loop->pStretcher[c] = NULL;
+        loop->pCacheStart[c] = NULL;
+        loop->lChanWritten[c] = 0;
+    }
 
 
     //DBG(fprintf(stderr, "New head is %08x\n", (unsigned)loop);)
@@ -709,18 +759,21 @@ static void clearLoopChunks(SooperLooper *pLS)
 {
     LoopChunk *loop = pLS->headLoopChunk;
     while (loop) {
-        if (loop->pStretcher) {
-            delete loop->pStretcher;
-            loop->pStretcher = NULL;
+        for (unsigned c = 0; c < NUM_CHANNELS; c++) {
+            if (loop->pStretcher[c]) {
+                delete loop->pStretcher[c];
+                loop->pStretcher[c] = NULL;
+            }
+            if (loop->pCacheStart[c]) {
+                free(loop->pCacheStart[c]);
+                loop->pCacheStart[c] = NULL;
+            }
+            loop->lChanWritten[c] = 0;
         }
-        if (loop->pCacheStart) {
-            free(loop->pCacheStart);
-            loop->pCacheStart = NULL;
-            loop->cached_bpm = 0.0;
-            loop->lCacheLength = 0;
-            loop->lCacheCapacity = 0;
-            loop->lRenderPos = 0;
-        }
+        loop->cached_bpm = 0.0;
+        loop->lCacheLength = 0;
+        loop->lCacheCapacity = 0;
+        loop->lRenderPos = 0;
         loop = loop->prev;
     }
     pLS->headLoopChunk = NULL;
@@ -2257,13 +2310,33 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                                 if (loop->cached_bpm != plugin->transport_bpm) {
                                     startStretchCacheGeneration(loop, pLS->fSampleRate, plugin->transport_bpm);
                                 }
-                                useStretchCache = (loop->pCacheStart != NULL);
+                                useStretchCache = (loop->pCacheStart[0] != NULL);
                             }
                         }
 
                         for (;lSampleIndex < SampleCount;
                             lSampleIndex++)
                         {
+                            // Computed once per output sample (not per channel):
+                            // pLoopStart is interleaved, so dCurrPos/NUM_CHANNELS
+                            // is the native frame position both channels' cache
+                            // reads share -- "two buffers, one cursor" (see
+                            // LoopChunk's pCacheStart comment).
+                            unsigned long lCacheIdx = 0;
+                            double dCacheFrac = 0.0;
+                            if (useStretchCache) {
+                                double dCacheFramePos =
+                                    (loop->dCurrPos / (double) NUM_CHANNELS) / stretchRatio;
+                                lCacheIdx = (unsigned long) dCacheFramePos;
+                                ensureStretchCacheFilled(loop, lCacheIdx + 1);
+                                if (loop->lCacheLength > 0) {
+                                    if (lCacheIdx >= loop->lCacheLength) {
+                                        lCacheIdx = loop->lCacheLength - 1;
+                                    }
+                                    dCacheFrac = dCacheFramePos - lCacheIdx;
+                                }
+                            }
+
                             for (unsigned c = 0; c < NUM_CHANNELS; c++) {
                                 lCurrPos =(unsigned int) fmod(loop->dCurrPos, loop->lLoopLength);
                                 //fprintf(stderr, "curr = %u\n", lCurrPos);
@@ -2309,24 +2382,17 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
                                 {
                                     LADSPA_Data fInterpSample;
                                     if (useStretchCache) {
-                                        // Native lCurrPos maps onto the cache by the
-                                        // same ratio that scales dCurrPos, so the
-                                        // cache wraps exactly when dCurrPos wraps.
-                                        double dCachePos = (double) lCurrPos / stretchRatio;
-                                        unsigned long lCacheIdx = (unsigned long) dCachePos;
-                                        ensureStretchCacheFilled(loop, lCacheIdx + 1);
+                                        // lCacheIdx/dCacheFrac computed once above for
+                                        // both channels ("two buffers, one cursor");
+                                        // only which per-channel buffer to read differs.
                                         if (loop->lCacheLength == 0) {
                                             fInterpSample = 0.0;
                                         } else {
-                                            if (lCacheIdx >= loop->lCacheLength) {
-                                                lCacheIdx = loop->lCacheLength - 1;
-                                            }
-                                            double dCacheFrac = dCachePos - lCacheIdx;
                                             unsigned long lCacheNext =
                                                 (lCacheIdx + 1 >= loop->lCacheLength) ? 0 : lCacheIdx + 1;
                                             fInterpSample =
-                                                *(loop->pCacheStart + lCacheIdx) * (1.0 - dCacheFrac)
-                                                + *(loop->pCacheStart + lCacheNext) * dCacheFrac;
+                                                *(loop->pCacheStart[c] + lCacheIdx) * (1.0 - dCacheFrac)
+                                                + *(loop->pCacheStart[c] + lCacheNext) * dCacheFrac;
                                         }
                                     } else {
                                         double dFracPos = fmod(loop->dCurrPos, loop->lLoopLength) - lCurrPos;
