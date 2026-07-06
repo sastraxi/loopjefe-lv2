@@ -40,8 +40,12 @@ Playback picks its source per region, cheapest first:
 
 ## Rate-change policy
 
-- **Any rate change invalidates the whole cache.** No partial cache at a
-  stale rate is ever read.
+- **A rate change retires the cache — but not instantly.** The stale cache
+  is kept *readable* through the stream's re-prime window (see Pre-roll) so
+  the audience never falls into a hole while the stretcher re-primes at the
+  new ratio; only once the primed stream produces on-target output is the
+  cache wiped and re-logged. No stale cache is ever read *past* that
+  hand-off.
 - **Caching does not arm until the rate has held stable for
   `STRETCH_SETTLE_SAMPLES`** (250 ms, computed as `0.25 * SR` — sibling of
   `TRIG_SETTLE`'s "settle for N samples" idiom, but sample-rate-correct).
@@ -49,17 +53,22 @@ Playback picks its source per region, cheapest first:
 During a ramp the rate changes every block, so caching never arms — we
 stream the whole time, glitch-free, and discard nothing because there was
 nothing to discard. When the rate parks, the stream keeps playing and,
-after the settle window, *starts* logging; the next wrap at that rate
-becomes a pure cache read.
+after the settle window, *starts* logging what it is already emitting (it
+was never idle during the settle, so arming is warm — no re-engage); the
+next wrap at that rate becomes a pure cache read.
 
 ## Pre-roll: the stream warms up whenever it has been inactive
 
 A phase vocoder's analysis windows must be full before its output is
 trustworthy. Rubber Band reports this as a startup latency. **Whenever the
 stream has been inactive for any span of samples, it must be pre-rolled
-before its output reaches the audience.** A seek is one cause of
-inactivity; a cache-miss mid-region is another; there is no need to
-conflate them — the rule is "was the stream running here last block?"
+before its output reaches the audience.** The stream goes inactive for
+exactly one reason in normal use: while the audience reads a *complete*
+cache (path 2) the vocoder idles — that idling is the cache's whole CPU
+justification. So the stream re-engages cold on the next rate change, when
+the cache is retired. (An XRUN is the only other cause; the transport never
+seeks — play/pause only, where the next frame is continuous — so the feed
+cursor never jumps.) The rule is "was the stream running here last block?"
 
 Measured for our exact config (`EngineFiner | WindowShort |
 ProcessRealTime`, via a probe calling the R3 API):
@@ -77,8 +86,9 @@ Three facts this pins:
 - **Pad == delay** — R3's real-time contract: feed N input frames of
   pre-context, discard N output frames, and the next output sample lands
   exactly on the target. We feed the loop's *real* preceding samples
-  (wrapping) as the pad rather than silence, so the windows prime with
-  actual signal and the audience never hears the warm-up.
+  (wrapping) as the pad, so the primed stream's first output lands on
+  target; what covers the audience *during* the discarded frames is a
+  separate question, answered below.
 - **Steps with sample rate**, so **query `getPreferredStartPad()` /
   `getStartDelay()` at runtime — never hardcode.** `getProcessSizeLimit()`
   is 524288; we feed `STRETCH_FEED_CHUNK` (256), far under any cap.
