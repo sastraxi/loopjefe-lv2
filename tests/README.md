@@ -18,7 +18,7 @@ macOS). Nothing else — LV2 is header-only, and the tests don't yet link
 
 ## Why this works
 
-`SooperLooperPlugin::run()` is a pure function of its ports plus the
+`LoopJefePlugin::run()` is a pure function of its ports plus the
 transport it caches from the `time:Position` atom. There's no hidden
 global state and no realtime thread, so a test just has to:
 

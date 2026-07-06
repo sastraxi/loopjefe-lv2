@@ -15,13 +15,13 @@
 static const LV2_Descriptor Descriptor =
 {
     PLUGIN_URI,
-    SooperLooperPlugin::instantiate,
-    SooperLooperPlugin::connect_port,
-    SooperLooperPlugin::activate,
-    SooperLooperPlugin::run,
-    SooperLooperPlugin::deactivate,
-    SooperLooperPlugin::cleanup,
-    SooperLooperPlugin::extension_data
+    LoopJefePlugin::instantiate,
+    LoopJefePlugin::connect_port,
+    LoopJefePlugin::activate,
+    LoopJefePlugin::run,
+    LoopJefePlugin::deactivate,
+    LoopJefePlugin::cleanup,
+    LoopJefePlugin::extension_data
 };
 
 /**********************************************************************************************************************************************************/
@@ -35,9 +35,9 @@ const LV2_Descriptor* lv2_descriptor(uint32_t index)
 
 /**********************************************************************************************************************************************************/
 
-LV2_Handle SooperLooperPlugin::instantiate(const LV2_Descriptor* descriptor, double SampleRate, const char* bundle_path, const LV2_Feature* const* features)
+LV2_Handle LoopJefePlugin::instantiate(const LV2_Descriptor* descriptor, double SampleRate, const char* bundle_path, const LV2_Feature* const* features)
 {
-    SooperLooperPlugin *plugin = new SooperLooperPlugin();
+    LoopJefePlugin *plugin = new LoopJefePlugin();
 
     plugin->urid_map = NULL;
     for (int i = 0; features[i]; i++) {
@@ -66,9 +66,9 @@ LV2_Handle SooperLooperPlugin::instantiate(const LV2_Descriptor* descriptor, dou
     plugin->capture_bpm = 0.0;
     plugin->capture_bpm_set = false;
 
-    SooperLooper * pLS;
+    LoopJefe * pLS;
     // important note: using calloc to zero all data
-    pLS = (SooperLooper *) calloc(1, sizeof(SooperLooper));
+    pLS = (LoopJefe *) calloc(1, sizeof(LoopJefe));
     if (pLS == NULL)
       return NULL;
     plugin->pLS = pLS;
@@ -123,11 +123,11 @@ LV2_Handle SooperLooperPlugin::instantiate(const LV2_Descriptor* descriptor, dou
 
 /**********************************************************************************************************************************************************/
 
-void SooperLooperPlugin::activate(LV2_Handle instance)
+void LoopJefePlugin::activate(LV2_Handle instance)
 {
-  SooperLooperPlugin *plugin = (SooperLooperPlugin *) instance;
+  LoopJefePlugin *plugin = (LoopJefePlugin *) instance;
 
-  SooperLooper *pLS = plugin->pLS;
+  LoopJefe *pLS = plugin->pLS;
 
   pLS->lRampSamples = 0;
   pLS->bRampDown = 0;
@@ -140,20 +140,20 @@ void SooperLooperPlugin::activate(LV2_Handle instance)
 
 /**********************************************************************************************************************************************************/
 
-void SooperLooperPlugin::deactivate(LV2_Handle instance)
+void LoopJefePlugin::deactivate(LV2_Handle instance)
 {
 }
 
 /**********************************************************************************************************************************************************/
 
-void SooperLooperPlugin::cleanup(LV2_Handle instance)
+void LoopJefePlugin::cleanup(LV2_Handle instance)
 {
-    delete ((SooperLooperPlugin *) instance);
+    delete ((LoopJefePlugin *) instance);
 }
 
 /**********************************************************************************************************************************************************/
 
-const void* SooperLooperPlugin::extension_data(const char* uri)
+const void* LoopJefePlugin::extension_data(const char* uri)
 {
     return NULL;
 }

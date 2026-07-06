@@ -12,7 +12,7 @@
 
 // creates a new loop chunk and puts it on the head of the list
 // returns the new chunk
-static LoopChunk * pushNewLoopChunk(SooperLooper* pLS, unsigned long initLength)
+static LoopChunk * pushNewLoopChunk(LoopJefe* pLS, unsigned long initLength)
 {
     //LoopChunk * loop = malloc(sizeof(LoopChunk));
     LoopChunk * loop;
@@ -79,7 +79,7 @@ static LoopChunk * pushNewLoopChunk(SooperLooper* pLS, unsigned long initLength)
 }
 
 // pop the head off and free it
-static int popHeadLoop(SooperLooper *pLS)
+static int popHeadLoop(LoopJefe *pLS)
 {
     LoopChunk *dead;
     dead = pLS->headLoopChunk;
@@ -115,7 +115,7 @@ static int popHeadLoop(SooperLooper *pLS)
 // chunk stays reachable via redoLoop, and its stretcher is retained for
 // redo-restore until the next clearLoopChunks. See
 // docs/tempo-follow-plan.md "Interaction with undo/redo".
-static void clearLoopChunks(SooperLooper *pLS)
+static void clearLoopChunks(LoopJefe *pLS)
 {
     LoopChunk *loop = pLS->headLoopChunk;
     while (loop) {
@@ -139,7 +139,7 @@ static void clearLoopChunks(SooperLooper *pLS)
     pLS->headLoopChunk = NULL;
 }
 
-int undoLoop(SooperLooper *pLS)
+int undoLoop(LoopJefe *pLS)
 {
     LoopChunk *loop = pLS->headLoopChunk;
     LoopChunk *prevloop;
@@ -158,7 +158,7 @@ int undoLoop(SooperLooper *pLS)
 }
 
 
-void redoLoop(SooperLooper *pLS)
+void redoLoop(LoopJefe *pLS)
 {
     LoopChunk *loop = NULL;
     LoopChunk *nextloop = NULL;
@@ -190,7 +190,7 @@ void redoLoop(SooperLooper *pLS)
     }
 }
 
-static void fillLoops(SooperLooper *pLS, LoopChunk *mloop, unsigned long lCurrPos)
+static void fillLoops(LoopJefe *pLS, LoopChunk *mloop, unsigned long lCurrPos)
 {
     LoopChunk *loop=NULL, *nloop, *srcloop;
 
@@ -272,7 +272,7 @@ static void fillLoops(SooperLooper *pLS, LoopChunk *mloop, unsigned long lCurrPo
 
 }
 
-static LoopChunk * beginOverdub(SooperLooper *pLS, LoopChunk *loop)
+static LoopChunk * beginOverdub(LoopJefe *pLS, LoopChunk *loop)
 {
     LoopChunk * srcloop;
     // make new loop chunk

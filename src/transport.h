@@ -13,7 +13,7 @@
 // fresh time:Position object every block while the transport is rolling,
 // so this cache is continuously current -- we never integrate our own
 // frame counter, which would drift.
-void SooperLooperPlugin::readTimeInfo()
+void LoopJefePlugin::readTimeInfo()
 {
     if (!time_info || !urid_map) {
         return;

@@ -18,10 +18,10 @@
 // because the handlers may reassign it (after clearLoopChunks/undoLoop).
 // All the surface/engine state mutations live here -- the DSP switch in
 // dsp_run.h is a pure consumer of pLS->state.
-void SooperLooperPlugin::runControlPorts(LoopChunk*& loop)
+void LoopJefePlugin::runControlPorts(LoopChunk*& loop)
 {
-    SooperLooperPlugin *plugin = this;
-    SooperLooper * pLS = plugin->pLS;
+    LoopJefePlugin *plugin = this;
+    LoopJefe * pLS = plugin->pLS;
 
     // Tempo-change-mid-capture abort. While the engine is in a capture state
     // (RECORD_ARM armed, RECORD capturing, RECORD_CLOSE close-pending,

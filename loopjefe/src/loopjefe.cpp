@@ -44,10 +44,10 @@ enum {IN_0, OUT_0, STATE, ADVANCE, RESET, UNDO, REDO, DRY_LEVEL, TIME_INFO, PLUG
 
 /**********************************************************************************************************************************************************/
 
-void SooperLooperPlugin::connect_port(LV2_Handle instance, uint32_t port, void *data)
+void LoopJefePlugin::connect_port(LV2_Handle instance, uint32_t port, void *data)
 {
-    SooperLooperPlugin *plugin;
-    plugin = (SooperLooperPlugin *) instance;
+    LoopJefePlugin *plugin;
+    plugin = (LoopJefePlugin *) instance;
 
     switch (port)
     {

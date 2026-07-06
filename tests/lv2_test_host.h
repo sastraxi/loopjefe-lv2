@@ -103,7 +103,7 @@ struct PluginHost {
     LV2_Atom_Forge forge;
     LV2_URID u_Position, u_bar, u_barBeat, u_beatsPerBar, u_beatsPerMinute, u_speed;
 
-    SooperLooperPlugin *plugin() { return (SooperLooperPlugin *)handle; }
+    LoopJefePlugin *plugin() { return (LoopJefePlugin *)handle; }
 
     explicit PluginHost(double sr = 48000.0, uint32_t max_block_ = 512)
         : sample_rate(sr), max_block(max_block_)
@@ -116,8 +116,8 @@ struct PluginHost {
         features[1] = nullptr;
 
         // instantiate() ignores the descriptor arg, so nullptr is fine.
-        handle = SooperLooperPlugin::instantiate(nullptr, sr, "", features);
-        SooperLooperPlugin::activate(handle);
+        handle = LoopJefePlugin::instantiate(nullptr, sr, "", features);
+        LoopJefePlugin::activate(handle);
 
         in.assign(max_block, 0.0f);
         out.assign(max_block, 0.0f);
@@ -142,24 +142,24 @@ struct PluginHost {
     ~PluginHost()
     {
         if (handle)
-            SooperLooperPlugin::cleanup(handle);
+            LoopJefePlugin::cleanup(handle);
     }
 
     void connect_all()
     {
-        SooperLooperPlugin::connect_port(handle, IN_0,      in.data());
-        SooperLooperPlugin::connect_port(handle, OUT_0,    out.data());
+        LoopJefePlugin::connect_port(handle, IN_0,      in.data());
+        LoopJefePlugin::connect_port(handle, OUT_0,    out.data());
 #if NUM_CHANNELS > 1
-        SooperLooperPlugin::connect_port(handle, IN_1,      in_1.data());
-        SooperLooperPlugin::connect_port(handle, OUT_1,    out_1.data());
+        LoopJefePlugin::connect_port(handle, IN_1,      in_1.data());
+        LoopJefePlugin::connect_port(handle, OUT_1,    out_1.data());
 #endif
-        SooperLooperPlugin::connect_port(handle, STATE,    &state);
-        SooperLooperPlugin::connect_port(handle, ADVANCE,  &advance);
-        SooperLooperPlugin::connect_port(handle, RESET,    &reset);
-        SooperLooperPlugin::connect_port(handle, UNDO,     &undo);
-        SooperLooperPlugin::connect_port(handle, REDO,     &redo);
-        SooperLooperPlugin::connect_port(handle, DRY_LEVEL, &dry_level);
-        SooperLooperPlugin::connect_port(handle, TIME_INFO, time_buf.data());
+        LoopJefePlugin::connect_port(handle, STATE,    &state);
+        LoopJefePlugin::connect_port(handle, ADVANCE,  &advance);
+        LoopJefePlugin::connect_port(handle, RESET,    &reset);
+        LoopJefePlugin::connect_port(handle, UNDO,     &undo);
+        LoopJefePlugin::connect_port(handle, REDO,     &redo);
+        LoopJefePlugin::connect_port(handle, DRY_LEVEL, &dry_level);
+        LoopJefePlugin::connect_port(handle, TIME_INFO, time_buf.data());
     }
 
     /* transport: write a single time:Position object at frame 0.
@@ -210,7 +210,7 @@ struct PluginHost {
 
     void run(uint32_t nframes)
     {
-        SooperLooperPlugin::run(handle, nframes);
+        LoopJefePlugin::run(handle, nframes);
     }
 
     // Simulate an external advance-port write (footswitch/CC/mod-ui), then

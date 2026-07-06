@@ -17,10 +17,10 @@
 /*****************************************************************************/
 
 /* Run the sampler  for a block of SampleCount samples. */
-void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
+void LoopJefePlugin::run(LV2_Handle instance, uint32_t SampleCount)
 {
-    SooperLooperPlugin *plugin;
-    plugin = (SooperLooperPlugin *) instance;
+    LoopJefePlugin *plugin;
+    plugin = (LoopJefePlugin *) instance;
 
     // Planar port-pointer arrays: mono and stereo share one indexing idiom
     // (pfInputs[c][frame]) with no per-channel branching in the DSP switch.
@@ -36,7 +36,7 @@ void SooperLooperPlugin::run(LV2_Handle instance, uint32_t SampleCount)
     unsigned int lCurrPos = 0;
     double dDummy;
 
-    SooperLooper * pLS;
+    LoopJefe * pLS;
     LoopChunk *loop;
 
 

@@ -16,7 +16,7 @@ headers in dependency (DAG) order. The domains:
 
 | File | Owns |
 |---|---|
-| `src/types.h` | `LADSPA_Data`, constants, `STATE_*`/`SURFACE_*` enums, `LoopChunk`, `SooperLooper`, `TimeURIs`, `SooperLooperPlugin` class decl |
+| `src/types.h` | `LADSPA_Data`, constants, `STATE_*`/`SURFACE_*` enums, `LoopChunk`, `LoopJefe`, `TimeURIs`, `LoopJefePlugin` class decl |
 | `src/transport.h` | `readTimeInfo` + phase-map helpers |
 | `src/memory.h` | `LoopChunk` lifecycle: arena, push/pop/clear/undo/redo, `fillLoops`, `beginOverdub` |
 | `src/stretch.h` | Rubber Band render cache (tempo-follow) |
@@ -35,7 +35,7 @@ recompile against it.
 Audio is stored **planar** (de-interleaved): one contiguous per-channel
 slab, `LoopChunk::pLoopStart[NUM_CHANNELS]` / `pLoopStop[NUM_CHANNELS]`,
 each pointing into its **own** bump-allocator arena
-(`SooperLooper::pSampleBuf[NUM_CHANNELS]`, one `calloc` per channel; headers
+(`LoopJefe::pSampleBuf[NUM_CHANNELS]`, one `calloc` per channel; headers
 live in arena 0). `dCurrPos`, `lLoopLength`, marks, and the adjustments all
 count **frames** (one unit per output frame), *not* interleaved samples;
 `dCurrPos += rate` happens once per frame, outside the `for (c)` channel

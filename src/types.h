@@ -88,7 +88,7 @@ typedef float LADSPA_Data;
 // Externally-visible values for the `state` control port -- a 5-value
 // wrapper cycle implementing the single-footswitch UX described in
 // docs/multitrack-looper-plan.md (pi-Stomp repo). Distinct from the
-// engine's internal SooperLooper::state (STATE_* above), which the
+// engine's internal EngineState::state (STATE_* above), which the
 // wrapper drives underneath.
 #define SURFACE_EMPTY     0
 #define SURFACE_RECORDING 1
@@ -145,7 +145,7 @@ typedef struct _LoopChunk {
     // Tempo-follow stretch facet (see docs/tempo-follow-plan.md).
     // recorded_bpm is the host transport bpm sampled at the moment this
     // chunk's capture closed. 0 = free-run / no anchor (bypass stretch).
-    // Lives per-chunk (not per-SooperLooper) because the undo/redo stack
+    // Lives per-chunk (not per-EngineState) because the undo/redo stack
     // holds chunks captured at potentially different bpms; undo swaps
     // which chunk is head, so it swaps which ratio is in force.
     double recorded_bpm;
@@ -236,7 +236,7 @@ typedef struct {
     LoopChunk * headLoopChunk;
     LoopChunk * tailLoopChunk;
 
-} SooperLooper;
+} LoopJefe;
 
 
 // URIDs for the fields of a time:Position atom object, cached once at
@@ -250,11 +250,11 @@ typedef struct {
     LV2_URID time_speed;
 } TimeURIs;
 
-class SooperLooperPlugin
+class LoopJefePlugin
 {
 public:
-    SooperLooperPlugin() {}
-    ~SooperLooperPlugin() {
+    LoopJefePlugin() {}
+    ~LoopJefePlugin() {
         if (pLS) {
             for (unsigned c = 0; c < NUM_CHANNELS; c++)
                 free(pLS->pSampleBuf[c]);
@@ -285,7 +285,7 @@ public:
     float *redo;
     float *dryLevel;
     const LV2_Atom_Sequence *time_info;
-    SooperLooper *pLS;
+    LoopJefe *pLS;
     float dryVolumeCoef;
     int params_state[PLUGIN_CONTROL_PORT_COUNT];
     bool undoSet;
