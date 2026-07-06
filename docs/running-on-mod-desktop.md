@@ -15,11 +15,11 @@ make mod-desktop        # build .dylib bundles, install to the search path
 
 Both bundles appear in the plugin list under the **TreeFallSound** brand.
 
-## Why a special target — two macOS gotchas
+## Why a special target — four macOS gotchas
 
 The default `make install` targets a Linux/MOD-device layout
 (`$(PREFIX)/lib/lv2`, `.so` binaries). MOD Desktop on macOS differs in
-two ways that will silently prevent the plugin from loading:
+four ways that will prevent the plugin from loading (with no visible error in the pedalboard UI — the plugin just doesn't appear, or "Error loading effect" on drag-in; see "Reading the host log" below):
 
 1. **Binary extension must be `.dylib`, not `.so`.** MOD Desktop's host
    `dlopen`s a `.dylib` (its own bundled plugins ship as e.g.
@@ -47,6 +47,61 @@ two ways that will silently prevent the plugin from loading:
    make MACOS=true install -C loopjefe-2x2 LV2DIR="$HOME/Library/Audio/Plug-Ins/LV2"
    ```
 
+3. **External dylib deps must be static-linked.** MOD Desktop is a
+   code-signed, hardened-runtime app. macOS strips `DYLD_*` env vars when
+   launching signed apps, so homebrew's `@rpath/librubberband.3.dylib` /
+   `libsamplerate.0.dylib` won't resolve when the host `dlopen`s our
+   bundle — `lilv_lib_open()` fails and the plugin is dropped. The
+   Makefiles static-link the `.a` archives under `MACOS=true` so the
+   bundled `loopjefe.dylib` depends only on system frameworks (matching
+   MOD's own `sooperlooper-2x2.dylib`). The dylib grows from ~36 KB to
+   ~1.8 MB (all Rubber Band R3 code); that's expected. Verify with
+   `otool -L loopjefe.dylib` — only `libSystem`, `libc++`, and
+   `Accelerate` should appear.
+
+4. **MOD Desktop enforces library validation.** Even with deps clean,
+   the host rejects any third-party `.dylib` whose code signature lacks
+   MOD's Team ID (`P3KTRVLR59`). An ad-hoc-signed dylib (`codesign -s -`)
+   isn't enough — library validation compares Team IDs and ours is empty.
+   The fix is to run a **re-signed copy** of MOD Desktop with the
+   `com.apple.security.cs.disable-library-validation` entitlement added.
+   The original in `/Applications` is SIP-protected (`com.apple.provenance`)
+   and can't be re-signed in place; copy it to `~/Applications` first.
+   See "Re-running MOD Desktop re-signed" below.
+
+## Re-running MOD Desktop re-signed
+
+`tools/resign-mod-desktop.sh` copies MOD Desktop from `/Applications` to
+`~/Applications`, strips xattrs, and re-signs the whole bundle ad-hoc with
+`disable-library-validation`. Run it once after installing or updating
+MOD Desktop, then launch `~/Applications/MOD Desktop.app` (not the
+`/Applications` original):
+
+```sh
+tools/resign-mod-desktop.sh
+open ~/Applications/MOD\ Desktop.app
+```
+
+The re-signed copy survives across launches; re-run the script only after
+a MOD Desktop update overwrites `/Applications/MOD Desktop.app`.
+
+## Reading the host log
+
+When a plugin fails to load, MOD Desktop's pedalboard UI shows only a
+generic "Error loading effect" toast — the actual cause is in the
+**MOD Host** log pane. Enable it via *Show Logs* (bottom-left, under GUI
+Options). The host (`mod-host`) runs as a JACK internal client (`.so`
+inside `jackd`), so its `fprintf(stderr, …)` lands in jackd's stderr,
+which MOD Desktop merges into that pane. The two lines that matter:
+
+- `lilv_lib_open(): error: Failed to open library …` — dylib won't
+  `dlopen` (code-signature mismatch, missing external dep, or wrong
+  architecture). Check `otool -L` and `codesign -dv` on the bundle's
+  `.dylib`.
+- `can't get lilv instance` — `lilv_plugin_instantiate()` returned NULL
+  (missing required feature, or `instantiate` returned NULL/crashed).
+  lilv prints a `Missing feature …` line just before this one.
+
 ## Verifying a bundle loads without launching the app
 
 `make validate` (root) stages a throwaway install and uses **lilv** — the
@@ -72,7 +127,7 @@ property. lilv discovery is the signal that matters.
 `ev->body.type == time:Position` rather than the conventional
 `atom:Object` + `otype` pair. The engine tests forge an atom shaped to
 match, so all the beat-sync tests pass — but if MOD Desktop's host sends
-a standards-compliant plain Object, the engine will **silently ignore
+a standards-compliant plain Object, the engine will **ignore
 transport** and every beat-sync feature (record quantize, overdub wrap,
 tempo-follow, tempo-abort) falls back to free-run. If tempo sync looks
 dead in the app, this mismatch is the first suspect.
