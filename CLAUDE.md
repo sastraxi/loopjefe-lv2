@@ -4,6 +4,17 @@ LV2 looper, fork of `mod-audio/sooperlooper-lv2-plugin` (GPL — keep Jesse
 Chappell's copyright headers). Two bundles sharing one engine: `loopjefe`
 (mono) and `loopjefe-2x2` (stereo).
 
+## Coding style
+
+* arm64/aarch64 (rpi5 + apple silicon) is our primary and only target. Use optimizations for these platforms.
+* code that is not tested is code we cannot trust
+* do not refer to docs/markdown files inside of code comments
+* no novels in code comments -- discussing why at critical moments or explaining cryptic optimized code is good. Putting a 5 line comment in front of 5 lines of code makes things harder to understand. The occasional signpost is good; too much code with no comments anywhere makes it hard for the reader to start.
+* optimize for maintainability.
+* do not break LV2 contracts once we get to version 1.0
+* concepts should map one-to-one with domain objects
+* enforce a DAG of imports -- files should not grow too large
+
 ## Layout — the one rule that matters
 
 `src/shared.h` is the shared engine: edit it once. Everything else is

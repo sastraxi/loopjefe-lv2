@@ -1,5 +1,5 @@
 /* test_overdub_tempo_follow.cpp -- overdub while the loop is tempo-shifted.
-   The two most complex subsystems (the Rubber Band tempo-follow stretch and
+   The two most complex subsystems (the WSOLA tempo-follow stretch and
    the overdub layer path) interacting; nothing else exercises them together.
 
    CHARACTERIZATION (see tests/README.md "Contract vs. characterization"):
@@ -8,20 +8,19 @@
 
    What's established here:
      - playing a 120-bpm loop with the transport at 140 engages the
-       stretcher (tempo-follow is genuinely active, not bypassed);
+       WSOLA voice (tempo-follow is genuinely active, not bypassed);
      - overdub arm from Playback still reaches STATE_OVERDUB under
        tempo-follow -- the wrap detection that fires the layer doesn't hang
        when the cursor is advancing at the stretched rate;
      - the layer inherits the *source's* recorded_bpm (120) and un-stretched
        loop_length, NOT the transport bpm (140) -- because overdub capture
        reads/sums against the raw source buffer (dsp_run.h STATE_OVERDUB),
-       never the stretch cache. The audience hears the loop stretched to
+       never the stretch path. The audience hears the loop stretched to
        140, but the performer's new take is written into the 120-length
-       buffer at raw indices. THIS is the suspect interaction flagged in
-       docs/running-on-mod-desktop.md: overdubbing while tempo-shifted
-       layers against un-stretched audio. If that's ever fixed (capture
-       against the stretched timeline), the recorded_bpm / length asserts
-       below are the ones that will -- and should -- change;
+       buffer at raw indices. THIS is the suspect interaction: overdubbing
+       while tempo-shifted layers against un-stretched audio. If that's ever
+       fixed (capture against the stretched timeline), the recorded_bpm /
+       length asserts below are the ones that will -- and should -- change;
      - after commit the layered loop is itself anchored (recorded_bpm 120)
        and still tempo-follows at 140.
 
@@ -82,7 +81,7 @@ static void test_overdub_under_tempo_follow()
     // Play at 140: tempo-follow must actually engage (stretcher allocated).
     double abs = 96000.0;
     for (int k = 0; k < 10; k++) { push_at(h, abs, PLAY_BPM); h.run(BLK); abs += BLK; }
-    CHECK(h.stretcher() != NULL);                  // stretch is live, not bypassed
+    CHECK(h.voice() != NULL);                  // stretch is live, not bypassed
     CHECK_EQ(h.engine(), STATE_PLAY);
 
     // Arm overdub (reset is the Playback->Overdub mode trigger), then run.
@@ -128,7 +127,7 @@ static void test_overdub_under_tempo_follow()
     // tempo-follows at 140 (its own stretcher stays live).
     for (int k = 0; k < 5; k++) { push_at(h, abs, PLAY_BPM); h.run(BLK); abs += BLK; }
     CHECK_EQ((long) h.recorded_bpm(), 120);
-    CHECK(h.stretcher() != NULL);
+    CHECK(h.voice() != NULL);
 }
 
 int main()

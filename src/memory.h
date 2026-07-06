@@ -61,14 +61,8 @@ static LoopChunk * pushNewLoopChunk(LoopJefe* pLS, unsigned long initLength)
 
     // raw bump-allocated memory -- pointer fields must be explicitly
     // zeroed, they don't come back as NULL for free.
-    loop->cached_bpm = 0.0;
-    loop->lCacheLength = 0;
-    loop->lCacheCapacity = 0;
-    loop->lRenderPos = 0;
     for (unsigned c = 0; c < NUM_CHANNELS; c++) {
-        loop->pStretcher[c] = NULL;
-        loop->pCacheStart[c] = NULL;
-        loop->lChanWritten[c] = 0;
+        loop->pVoice[c] = NULL;
     }
 
 
@@ -106,34 +100,25 @@ static int popHeadLoop(LoopJefe *pLS)
 // clear all LoopChunks (undoAll , can still redo them back)
 //
 // This is the single reclaim point for heap-allocated per-chunk state
-// (the Rubber Band stretcher handles). The bump allocator in
+// (the WSOLA voice handles). The bump allocator in
 // pushNewLoopChunk never frees raw audio -- it lays chunks end-to-end in
 // pSampleBuf, and the next push after clearLoopChunks writes from the
 // start, overwriting old chunks. So head is only ever NULL here (or at
-// init), and no chunk is ever overwritten without its stretcher being
+// init), and no chunk is ever overwritten without its voice being
 // freed first. undoLoop/popHeadLoop intentionally do NOT free: the popped
-// chunk stays reachable via redoLoop, and its stretcher is retained for
-// redo-restore until the next clearLoopChunks. See
-// docs/tempo-follow-plan.md "Interaction with undo/redo".
+// chunk stays reachable via redoLoop, and its voice is retained for
+// redo-restore until the next clearLoopChunks.
 static void clearLoopChunks(LoopJefe *pLS)
 {
     LoopChunk *loop = pLS->headLoopChunk;
     while (loop) {
         for (unsigned c = 0; c < NUM_CHANNELS; c++) {
-            if (loop->pStretcher[c]) {
-                delete loop->pStretcher[c];
-                loop->pStretcher[c] = NULL;
+            if (loop->pVoice[c]) {
+                wsolaFree(loop->pVoice[c]);
+                free(loop->pVoice[c]);
+                loop->pVoice[c] = NULL;
             }
-            if (loop->pCacheStart[c]) {
-                free(loop->pCacheStart[c]);
-                loop->pCacheStart[c] = NULL;
-            }
-            loop->lChanWritten[c] = 0;
         }
-        loop->cached_bpm = 0.0;
-        loop->lCacheLength = 0;
-        loop->lCacheCapacity = 0;
-        loop->lRenderPos = 0;
         loop = loop->prev;
     }
     pLS->headLoopChunk = NULL;
@@ -293,8 +278,7 @@ static LoopChunk * beginOverdub(LoopJefe *pLS, LoopChunk *loop)
         loop->dCurrPos = fmod(srcloop->dCurrPos, loop->lLoopLength);
         // The layer plays at the source loop's reference tempo (it's the
         // same audio, layered on top), so it inherits the source's
-        // recorded_bpm. See docs/tempo-follow-plan.md "Interaction with
-        // undo/redo".
+        // recorded_bpm.
         loop->recorded_bpm = srcloop->recorded_bpm;
         loop->anchor_beat = srcloop->anchor_beat;
         loop->loop_beats = srcloop->loop_beats;

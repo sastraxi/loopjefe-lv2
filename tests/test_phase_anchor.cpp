@@ -1,8 +1,7 @@
-/* test_phase_anchor.cpp -- phase anchoring: the drift fix from
-   docs/tempo-follow-plan.md "Phase anchoring (drift elimination)".
+/* test_phase_anchor.cpp -- phase anchoring: the drift fix.
 
    This is a *constant-tempo* defect, orthogonal to the tempo-follow
-   (Rubber Band) facet in test_tempo_follow.cpp: a loop is stored as an
+   (WSOLA) facet in test_tempo_follow.cpp: a loop is stored as an
    integer number of samples, but its true musical length is almost
    always fractional (e.g. 133.333 BPM, 4/4, 44100 Hz -- a non-dividing
    period deliberately chosen so the bar length doesn't land on a whole

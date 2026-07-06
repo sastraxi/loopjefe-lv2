@@ -92,8 +92,7 @@ void LoopJefePlugin::runControlPorts(LoopChunk*& loop)
     // Means "destroy audio" everywhere EXCEPT the single Playback -> Overdub
     // arm transition, where reset is repurposed as the *mode trigger* (there's
     // no other input available to enter overdub). That transition destroys
-    // nothing; every other reset drops the take/layer the engine holds. See
-    // docs/state-machine-redesign.md §4.1 for the full table.
+    // nothing; every other reset drops the take/layer the engine holds.
     if (*(plugin->reset) > 0.0 && !plugin->resetSet) {
         plugin->resetSet = true;
         switch (pLS->state) {
@@ -158,8 +157,7 @@ void LoopJefePlugin::runControlPorts(LoopChunk*& loop)
     // reset. Self-clears the port so a footswitch that latches its CC at a
     // fixed value (rather than bouncing back to 0) doesn't re-fire every
     // block. One rising edge = exactly one surface-cycle step, full stop --
-    // no echo-comparison dance, no last_written_state. See
-    // docs/state-machine-redesign.md for the full transition table.
+    // no echo-comparison dance, no last_written_state.
     if (*(plugin->advance) > 0.0 && !plugin->advanceSet) {
         plugin->advanceSet = true;
         switch (pLS->state) {

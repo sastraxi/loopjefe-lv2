@@ -1,5 +1,5 @@
 /* test_overdub.cpp -- audio-level correctness of the overdub layer path
-   (docs/tempo-follow-plan.md test_overdub.cpp: "sums layers", "undo pops
+   ("sums layers", "undo pops
    layer", "inherits source length"). test_overdub_lifecycle.cpp already
    covers the state-machine transitions; this file checks the actual
    sample content the STATE_OVERDUB block (shared.h) produces.

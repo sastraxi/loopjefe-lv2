@@ -65,7 +65,6 @@
 #include "types.h"
 #include "transport.h"
 #include "memory.h"
-#include "stretch.h"
 #include "state_machine.h"
 #include "dsp_run.h"
 #include "lv2_entry.h"

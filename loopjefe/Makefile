@@ -3,10 +3,6 @@
 # plugin to have available.
 SAMPLE_MEMORY = 200
 
-# Below this ratio (target bpm / recorded bpm), tempo-follow stretch skips
-# the render cache -- see docs/tempo-follow-plan.md "Render cache".
-MIN_STRETCH_RATIO = 0.2
-
 # plugin name
 PLUGIN = $(shell basename $(shell pwd) | tr A-Z a-z)
 
@@ -30,7 +26,7 @@ LV2DIR ?= $(PREFIX)/lib/lv2
 CXX ?= g++
 
 # flags
-CXXFLAGS += -I. -I../../src -O3 -Wall -fPIC -DPIC -c -DSAMPLE_MEMORY=$(SAMPLE_MEMORY) -DMIN_STRETCH_RATIO=$(MIN_STRETCH_RATIO)
+CXXFLAGS += -I. -I../../src -O3 -Wall -fPIC -DPIC -c -DSAMPLE_MEMORY=$(SAMPLE_MEMORY)
 LDFLAGS += -shared -lm
 ifneq ($(MACOS),true)
 LDFLAGS += -Wl,--no-undefined
@@ -38,23 +34,8 @@ else
 CXXFLAGS += $(shell pkg-config --cflags lv2)
 endif
 
-# Tempo-follow stretch (see docs/tempo-follow-plan.md). Rubber Band R3
-# real-time, baked in. GPL — whole stack is GPL.
-#
-# On macOS we static-link the .a archives so the bundled .dylib has zero
-# external deps — MOD Desktop is a signed app and strips DYLD_* env vars
-# on launch, so homebrew's @rpath/librubberband.3.dylib wouldn't resolve
-# when the host dlopens us, and the plugin would silently disappear from
-# the browser. Static linking (all GPL) avoids that. Linux/MOD-device
-# keeps dynamic -lrubberband (the .so finds it via ld.so).
-CXXFLAGS += $(shell pkg-config --cflags rubberband)
-ifeq ($(MACOS),true)
-LDFLAGS += /opt/homebrew/opt/rubberband/lib/librubberband.a \
-           /opt/homebrew/opt/libsamplerate/lib/libsamplerate.a \
-           -framework Accelerate
-else
-LDFLAGS += $(shell pkg-config --libs rubberband)
-endif
+# Tempo-follow stretch (see docs/tempo-follow-streaming.md). Hand-rolled
+# WSOLA, always-online, no external dependency.
 
 # remove command
 RM = rm -f

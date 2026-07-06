@@ -176,8 +176,7 @@ struct PluginHost {
         LV2_Atom_Forge_Frame obj_frame;
         lv2_atom_forge_object(&forge, &obj_frame, 0, u_Position);
         // Matches mod-host: time:bar is an exact atom:Long (pos.bar - 1),
-        // no float precision loss -- see effects.c readTimeInfo research
-        // in docs/tempo-follow-plan.md.
+        // no float precision loss.
         lv2_atom_forge_key(&forge, u_bar);
         lv2_atom_forge_long(&forge, bar);
         lv2_atom_forge_key(&forge, u_barBeat);
@@ -285,18 +284,17 @@ struct PluginHost {
         return l ? l->srcloop : NULL;
     }
     // Reference tempo sampled at the moment this chunk's capture closed.
-    // 0 = free-run / no anchor (stretch bypasses). See docs/tempo-follow-plan.md.
+    // 0 = free-run / no anchor (stretch bypasses).
     double recorded_bpm()
     {
         LoopChunk *l = plugin()->pLS->headLoopChunk;
         return l ? l->recorded_bpm : 0.0;
     }
-    // Per-chunk Rubber Band state (NULL until the first stretched block;
-    // tests assert it stays NULL since no stretch path exists yet).
-    void *stretcher()
+    // Per-chunk WSOLA voice (NULL until the first stretched block).
+    void *voice()
     {
         LoopChunk *l = plugin()->pLS->headLoopChunk;
-        return l ? (void *) l->pStretcher[0] : NULL;
+        return l ? (void *) l->pVoice[0] : NULL;
     }
 
     // Drive a constant input value for the next run() calls.

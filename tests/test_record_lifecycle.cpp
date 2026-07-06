@@ -1,7 +1,7 @@
 /* test_record_lifecycle.cpp -- bar-quantized record start/stop and the
    phase-continuous playback cursor, exercised in-process via lv2_test_host.h.
 
-   These pin the record lifecycle from docs/tempo-follow-plan.md:
+   These pin the record lifecycle:
      - start snaps to the next downbeat (free-run starts immediately);
      - stop quantizes to the nearest whole measure (RC-505 style):
          round up (released early) keeps recording out to the boundary,
@@ -193,7 +193,7 @@ static void test_second_tap_in_pending_force_closes()
 // recorded_bpm is sampled at close so the stretch facet can compute
 // ratio = current_bpm / recorded_bpm on playback. capture_bpm was sampled
 // at arm and validated stable through the capture; free-run leaves 0
-// (no anchor -> stretch bypasses). See docs/tempo-follow-plan.md.
+// (no anchor -> stretch bypasses).
 static void test_recorded_bpm_sampled_at_close()
 {
     // Transport-anchored close (round-down): recorded_bpm = capture_bpm.
@@ -243,8 +243,7 @@ static void test_recorded_bpm_sampled_at_close()
 // undo/redo walks the chunk stack independently of reset; both force engine
 // STATE_PLAY (or Empty if drained). The head chunk's recorded_bpm comes
 // with it -- undo restores the previous chunk's reference tempo, redo
-// restores the popped chunk's. See docs/tempo-follow-plan.md "Interaction
-// with undo/redo".
+// restores the popped chunk's.
 //
 // We build a two-chunk stack so undo leaves a head to read (redo-from-empty
 // is a pre-existing bug with its own guard at run()'s redo block -- out of
@@ -281,12 +280,11 @@ static void test_recorded_bpm_survives_undo_redo()
     CHECK_EQ(h.recorded_bpm(), BPM);          // layer's bpm restored
 }
 
-// Stretcher handles are heap-allocated per chunk, created lazily on the
-// first stretched block. No stretch path exists yet, so pStretcher must
+// WSOLA voice handles are heap-allocated per chunk, created lazily on the
+// first stretched block. No stretch path exists yet, so pVoice must
 // stay NULL through the entire record lifecycle. clearLoopChunks is the
 // single free path; undo/popHeadLoop never free (redo restores a warmed
-// stretcher). This pins the lifetime contract from the plan so a future
-// stretch path can rely on it.
+// voice). This pins the lifetime contract.
 static void test_stretcher_null_until_stretch_path()
 {
     PluginHost h(SR);
@@ -294,22 +292,22 @@ static void test_stretcher_null_until_stretch_path()
     push_at(h, 96000);
     h.tap(0);                          // close -> PLAY
     CHECK_EQ(h.engine(), STATE_PLAY);
-    CHECK_EQ(h.stretcher(), (void*)NULL);      // no stretch path yet
+    CHECK_EQ(h.voice(), (void*)NULL);      // no stretch path yet
 
     // undo drains, redo restores -- still NULL (never created).
     h.pulse_undo();
-    CHECK_EQ(h.stretcher(), (void*)NULL);      // head NULL
+    CHECK_EQ(h.voice(), (void*)NULL);      // head NULL
     h.pulse_redo();
-    CHECK_EQ(h.stretcher(), (void*)NULL);
+    CHECK_EQ(h.voice(), (void*)NULL);
 
     // Delete-all is two presses now (Playback -> advance -> Stopped ->
     // reset -> Empty), since reset-from-Playback arms overdub rather than
-    // deleting. See docs/state-machine-redesign.md §4.1.
+    // deleting.
     h.pulse_advance();                    // PLAYBACK -> STOPPED
     CHECK_EQ(h.engine(), STATE_STOPPED);
     h.pulse_reset();                      // STOPPED -> EMPTY (clearLoopChunks)
     CHECK_EQ(h.engine(), STATE_EMPTY);
-    CHECK_EQ(h.stretcher(), (void*)NULL);
+    CHECK_EQ(h.voice(), (void*)NULL);
 }
 
 // redo-from-empty: after undoing the only chunk (head becomes NULL, stack

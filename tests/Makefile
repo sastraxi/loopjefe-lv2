@@ -13,9 +13,8 @@ CXX ?= g++
 SAMPLE_MEMORY ?= 20
 
 CXXFLAGS += -I. -O2 -g -Wall -std=c++14 -DSAMPLE_MEMORY=$(SAMPLE_MEMORY) \
-            $(shell pkg-config --cflags lv2) \
-            $(shell pkg-config --cflags rubberband)
-LDFLAGS += $(shell pkg-config --libs rubberband)
+            $(shell pkg-config --cflags lv2)
+LDFLAGS +=
 
 TESTS := $(patsubst %.cpp,%,$(wildcard test_*.cpp))
 
@@ -30,6 +29,15 @@ ENGINE_SRC := lv2_test_host.h $(wildcard ../src/*.h) \
 
 test_%: test_%.cpp $(ENGINE_SRC)
 	$(CXX) $(CXXFLAGS) $< -o $@ $(LDFLAGS)
+
+# Self-contained WSOLA unit test: wsola.h is a raw-buffer API (no LV2,
+# no rubberband, no engine TU), so it gets its own rule -- direct-link,
+# with ASan/UBSan on. The generic test_% rule above would drag in the
+# bundle TU and link librubberband for nothing.
+test_wsola: test_wsola.cpp ../src/wsola.h
+	$(CXX) -I.. -O1 -g -std=c++14 -Wall \
+	    -fsanitize=address,undefined -fno-omit-frame-pointer \
+	    $< -o $@
 
 check: $(TESTS)
 	@rc=0; \

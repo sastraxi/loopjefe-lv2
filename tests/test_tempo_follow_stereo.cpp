@@ -1,12 +1,5 @@
-/* test_tempo_follow_stereo.cpp -- the stereo facet of the render cache
-   (see docs/tempo-follow-plan.md "Render cache" -> "Stereo channels").
-
-   pLoopStart in the 2x2 bundle is interleaved (L, R, L, R, ...); the
-   pitch-stretch render cache used to feed that straight into a single
-   mono RubberBandStretcher and read it back into both output channels
-   identically -- a real bug, just never exercised, since no test drove
-   the 2x2 bundle's stretch path. These pin the fix: two independent
-   single-channel buffers/stretchers per chunk, sharing one cursor.
+/* test_tempo_follow_stereo.cpp -- the stereo facet of the WSOLA stretch
+   path. Two independent single-channel voices per chunk, sharing one cursor.
 
    GPL, same as the rest of the repo. */
 
@@ -106,12 +99,9 @@ static void test_stretch_keeps_channels_independent()
 
     CHECK(left_ever_nonzero);        // L had real content -- stretch is active
     CHECK(!right_ever_nonzero);      // R was recorded silent -- must stay silent
-    CHECK(loop->pStretcher[0] != NULL);
-    CHECK(loop->pStretcher[1] != NULL);
-    CHECK(loop->pStretcher[0] != loop->pStretcher[1]);   // independent instances
-    CHECK(loop->pCacheStart[0] != NULL);
-    CHECK(loop->pCacheStart[1] != NULL);
-    CHECK(loop->pCacheStart[0] != loop->pCacheStart[1]); // independent buffers
+    CHECK(loop->pVoice[0] != NULL);
+    CHECK(loop->pVoice[1] != NULL);
+    CHECK(loop->pVoice[0] != loop->pVoice[1]);   // independent instances
 }
 
 // Unity ratio still bypasses to the raw interleaved buffer for both
@@ -130,17 +120,13 @@ static void test_unity_ratio_bypasses_both_channels()
     LoopChunk *loop = h.plugin()->pLS->headLoopChunk;
     CHECK(loop != NULL);
     if (!loop) return;
-    CHECK(loop->pCacheStart[0] == NULL);   // never allocated -- bypass path
+    CHECK(loop->pVoice[0] == NULL);   // never allocated -- bypass path
 }
 
 // Record DISTINCT tones on L and R, then stretch. The silence oracle above
 // proves no bleed into a silent channel; this proves the stronger property
-// that each channel's stretcher reads ITS OWN interleaved slot, not a shared
-// mono stream. The pre-fix bug fed the interleaved [L,R,L,R] buffer into one
-// mono stretcher and copied the result into both outputs -- so out == out_1
-// everywhere. With different tones in and a correct de-interleave, the two
-// stretched outputs must diverge. This is the path the planar refactor's
-// stretch-feed step (docs/planar-buffer-refactor.md step 4) rewrites.
+// that each channel's voice reads its own buffer, not a shared mono stream.
+// With different tones in, the two stretched outputs must diverge.
 static void record_one_bar_two_tones(PluginHost &h, double bpm = BPM)
 {
     push_at(h, 0.0, bpm);
@@ -187,8 +173,7 @@ static void test_stretch_keeps_distinct_channels_distinct()
     // The two channels are genuinely different signals -- a shared-buffer bug
     // would make them identical (divergence ~ 0).
     CHECK(divergence > 1.0);
-    CHECK(loop->pStretcher[0] != loop->pStretcher[1]);
-    CHECK(loop->pCacheStart[0] != loop->pCacheStart[1]);
+    CHECK(loop->pVoice[0] != loop->pVoice[1]);
 }
 
 int main()

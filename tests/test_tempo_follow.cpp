@@ -1,7 +1,7 @@
 /* test_tempo_follow.cpp -- the stretch facet: recorded loops follow the
    host transport tempo, pitch-preserved (time-stretch, not resample).
 
-   These pin the realtime stretch path from docs/tempo-follow-plan.md:
+   These pin the always-online WSOLA stretch path:
      - unity ratio (recorded_bpm == current_bpm) bypasses the stretcher
        and reads the raw buffer -- bit-identical to today's path;
      - no anchor (recorded_bpm == 0, free-run) never stretches, regardless
@@ -15,11 +15,10 @@
        (which is what a resample would produce);
      - recorded_bpm is captured at close (already pinned in
        test_record_lifecycle; re-asserted here for the stretch path's
-       consumption).
-
-   Cases fail until shared.h grows the stretch path in run()'s
-   STATE_PLAY/STATE_OVERDUB_ARM/STATE_OVERDUB_CLOSE audio loop; that's
-   the red half of the TDD cycle.
+       consumption);
+     - WSOLA voice is allocated on first engage and kept alive across
+       ratio changes (no cold-restart glitch);
+     - wide ratio swings never produce NaN/inf output.
 
    GPL, same as the rest of the repo. */
 
@@ -77,11 +76,10 @@ static void record_one_bar(PluginHost &h, double bpm = BPM)
 // is used -- so the pitch-preservation test needs actual signal content.
 // Kept separate from record_one_bar (rather than adding signal there)
 // because the bit-identical bypass test also uses that helper, and the
-// per-block phase-anchor reseed (docs/tempo-follow-plan.md "Phase
-// anchoring") derives dCurrPos from the transport's float32 barBeat even
-// at unity ratio -- fractional enough that a real (non-flat) signal
-// exposes sub-sample interpolation that a silent buffer masks. Not this
-// change's concern to fix; sidestepped instead.
+// per-block phase-anchor reseed derives dCurrPos from the transport's
+// float32 barBeat even at unity ratio -- fractional enough that a real
+// (non-flat) signal exposes sub-sample interpolation that a silent buffer
+// masks. Not this change's concern to fix; sidestepped instead.
 static void record_one_bar_with_tone(PluginHost &h, double bpm = BPM)
 {
     push_at(h, 0.0, bpm);
@@ -296,75 +294,9 @@ static void test_pitch_preserved_not_resample()
     CHECK(mismatches > 0);
 }
 
-// Render-cache fill is incremental, not a single blocking pass. A few
-// blocks in, only part of the native loop should have been fed to the
-// stretcher (lRenderPos < lLoopLength); once enough blocks have run to
-// cover a full wrap, the whole loop has been fed and the cache is
-// complete for good.
-static void test_render_cache_fills_incrementally()
-{
-    PluginHost h(SR, /*max_block=*/BLK);
-    record_one_bar_with_tone(h, /*bpm=*/120.0);
-    close_one_bar(h, /*bpm=*/120.0);
-    mute_dry(h);
-
-    const double new_bpm = 140.0;
-    LoopChunk *loop = h.plugin()->pLS->headLoopChunk;
-    CHECK(loop != NULL);
-    if (!loop) return;
-
-    push_at(h, 0.0, new_bpm);
-    h.in.assign(BLK, 0.0f);
-    h.out.assign(BLK, 0.0f);
-    h.run(BLK);
-
-    // One 1000-sample block in: nowhere near the whole 96000-sample loop
-    // should have been rendered yet.
-    CHECK(loop->lRenderPos > 0);
-    CHECK(loop->lRenderPos < loop->lLoopLength);
-
-    // Run enough further blocks to cover a full wrap at this ratio.
-    const double ratio = new_bpm / BPM;
-    const int total_blocks = (int) ceil(loop->lLoopLength / ratio / BLK) + 2;
-    for (int k = 1; k < total_blocks; k++) {
-        push_at(h, (double) k * BLK, new_bpm);
-        h.in.assign(BLK, 0.0f);
-        h.out.assign(BLK, 0.0f);
-        h.run(BLK);
-    }
-
-    CHECK_EQ(loop->lRenderPos, loop->lLoopLength);
-}
-
-// Below MIN_STRETCH_RATIO (0.2), the cache is skipped entirely -- the ratio
-// is too extreme to render usefully, so playback falls back to the raw path.
-static void test_ratio_below_floor_skips_cache()
-{
-    PluginHost h(SR, /*max_block=*/BLK);
-    record_one_bar_with_tone(h, /*bpm=*/120.0);
-    close_one_bar(h, /*bpm=*/120.0);
-    mute_dry(h);
-
-    const double new_bpm = 20.0;   // ratio = 0.1667, below the 0.2 floor
-    LoopChunk *loop = h.plugin()->pLS->headLoopChunk;
-    CHECK(loop != NULL);
-    if (!loop) return;
-
-    push_at(h, 0.0, new_bpm);
-    h.in.assign(BLK, 0.0f);
-    h.out.assign(BLK, 0.0f);
-    h.run(BLK);
-
-    CHECK(loop->pCacheStart[0] == NULL);
-    CHECK_EQ(loop->cached_bpm, 0.0);
-}
-
-// A ratio change mid-playback (still a capture state, not a hard destroy
-// path) must invalidate cache bookkeeping without recreating the
-// RubberBandStretcher instance -- that's the whole point of the persistent-
-// stretcher fix (see docs/tempo-follow-plan.md "Smooth-ramp behavior"): the
-// object identity survives, only setTimeRatio()/reset() touch it.
-static void test_ratio_change_keeps_same_stretcher_instance()
+// A ratio change mid-playback must keep the same WSOLA voice instance --
+// the object identity survives, only the ratio changes.
+static void test_ratio_change_keeps_same_voice_instance()
 {
     PluginHost h(SR, /*max_block=*/BLK);
     record_one_bar_with_tone(h, /*bpm=*/120.0);
@@ -380,7 +312,7 @@ static void test_ratio_change_keeps_same_stretcher_instance()
     h.out.assign(BLK, 0.0f);
     h.run(BLK);
 
-    RubberBand::RubberBandStretcher *first = loop->pStretcher[0];
+    Wsola *first = loop->pVoice[0];
     CHECK(first != NULL);
 
     push_at(h, (double) BLK, /*bpm=*/160.0);
@@ -388,16 +320,11 @@ static void test_ratio_change_keeps_same_stretcher_instance()
     h.out.assign(BLK, 0.0f);
     h.run(BLK);
 
-    CHECK(loop->pStretcher[0] == first);
-    CHECK_EQ(loop->cached_bpm, 160.0);
+    CHECK(loop->pVoice[0] == first);
 }
 
 // Rapid, wide bpm swings (near the floor, far above it, back and forth)
-// must never leak a NaN/Inf sample into the output -- mod-host/mod-ui
-// don't tolerate that, and the persistent-stretcher fix reuses the same
-// RubberBandStretcher instance across ratio changes instead of getting a
-// fresh one each time, so a bad reset()/setTimeRatio() sequence could in
-// principle poison its internal state across calls.
+// must never leak a NaN/Inf sample into the output.
 static void test_wide_ratio_swings_never_produce_nan()
 {
     PluginHost h(SR, /*max_block=*/BLK);
@@ -431,9 +358,7 @@ int main()
     test_no_anchor_never_stretches();
     test_tempo_change_keeps_bar_lock();
     test_pitch_preserved_not_resample();
-    test_render_cache_fills_incrementally();
-    test_ratio_below_floor_skips_cache();
-    test_ratio_change_keeps_same_stretcher_instance();
+    test_ratio_change_keeps_same_voice_instance();
     test_wide_ratio_swings_never_produce_nan();
     return test_summary("test_tempo_follow");
 }

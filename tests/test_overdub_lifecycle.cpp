@@ -1,5 +1,5 @@
-/* test_overdub_lifecycle.cpp -- the reachable overdub path from
-   docs/state-machine-redesign.md §4: arm from Playback (reset), capture a
+/* test_overdub_lifecycle.cpp -- the reachable overdub path:
+   arm from Playback (reset), capture a
    layer on top of the existing loop, commit (advance, quantize-to-wrap),
    force-close early (second advance), and abort (reset). All exercised
    in-process via lv2_test_host.h.

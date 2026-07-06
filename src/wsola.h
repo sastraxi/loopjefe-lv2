@@ -1,9 +1,12 @@
 /* wsola.h -- hand-rolled WSOLA time-stretch voice for the tempo-follow
-   facet, replacing the Rubber Band render cache. Self-contained: the core
-   `Wsola` struct takes raw float loop buffers and knows nothing about
-   LoopChunk / LV2, so it is unit-testable standalone and drops into the
-   engine as one heap-allocated voice per channel (mirrors the old
-   pStretcher[NUM_CHANNELS] lifecycle). See docs/tempo-follow-streaming.md.
+   facet. The `Wsola` struct takes raw float loop buffers and is unit-
+   testable standalone and drops into the engine as one heap-allocated
+   voice per channel.
+
+   Inspired by SoundTouch's WSOLA implementation, and as such this code
+   is also licensed under the LGPL v2.1, unlike the rest of this repo.
+   The original SoundTouch code is copyright © Olli Parviainen 2001-2024
+   and is available at https://www.surina.net/soundtouch/.
 
    Design (why this is not the textbook 50%-Hann WSOLA):
 
@@ -14,15 +17,20 @@
      sample from two imperfectly-aligned grains (the "warble"); a short
      aligned crossfade keeps the original waveform intact and confines
      blending to the seam the similarity search explicitly aligned.
-     Linear (equal-gain, not equal-power) tapers sum to unity across the
-     overlap -- the correct choice because the search makes the two sides
-     waveform-correlated, so they add coherently without a +3 dB bump.
+      Linear (equal-gain, not equal-power) tapers sum to unity across the
+      overlap -- the correct choice because the search makes the two sides
+      waveform-correlated, so they add coherently without a +3 dB bump.
 
-   - Similarity metric is normalized cross-correlation (corr / sqrt(norm)),
-     not AMDF. AMDF's only virtue was avoiding multiplies; on Cortex-A76 /
-     Apple Silicon the FMA units make multiplies free, and NCC does not
-     bias toward high-energy regions the way raw correlation / AMDF do.
-     We compare corr*|corr|/norm to keep the argmax sqrt-free.
+    - Similarity metric is normalized cross-correlation (corr / sqrt(norm)),
+      not AMDF. AMDF's only virtue was avoiding multiplies; on Cortex-A76 /
+      Apple Silicon the FMA units make multiplies free, and NCC does not
+      bias toward high-energy regions the way raw correlation / AMDF do.
+      The score returned below is corr*|corr|/norm -- SoundTouch's
+      sqrt-free approximation of corr/sqrt(norm): same sign, same argmax on
+      periodic content, but it weights the norm term twice and so biases
+      slightly toward low-energy candidates vs true NCC. Good enough in
+      practice (SoundTouch ships it); noted here so the search-quality test
+      asserts against the actual metric, not the textbook one.
 
    - The search is quick-seek: a coarse pass then a fine refine, so a wide
      search radius stays cheap.
@@ -82,7 +90,7 @@ static inline double wsolaLerpClamp(double s, double lo_s, double hi_s,
 
 // One WSOLA voice = one channel of one layer. POD-friendly (no ctor/dtor):
 // zero the struct, call init(); it lives in heap memory the engine owns and
-// frees, exactly like the old pStretcher[c]. All buffers are malloc'd once at
+// frees. All buffers are malloc'd once at
 // init and never resized -- process() is allocation-free.
 struct Wsola {
     // --- config, fixed at init from the sample rate ---
@@ -98,7 +106,12 @@ struct Wsola {
                          // (nudge it by the phase-map correction each block;
                          // a nudge <= seek is absorbed by the search, a
                          // larger one is a seek -> call reseed()).
-    long   prevChosen;   // last chosen grain start (bookkeeping)
+    long   prevChosen;   // last chosen grain start -- the ACTUAL read position
+                         // (anaPos is nominal; the difference is the search
+                         // offset). Reserved for the transient-preservation
+                         // hook (docs: "Open, tune-by-ear"): detecting
+                         // doubling/skipping needs the real analysis hop, not
+                         // the nominal one. Unused by v1's synth path.
     bool   first;        // next grain is the engage grain: no search, and
                          // emitted verbatim (flat front) so out[0] == loop[P]
 
@@ -173,6 +186,10 @@ static inline void wsolaReseed(Wsola *v, double P)
 // into linear `dst`, resolving the loop wrap with memcpy runs. Handles a
 // loop shorter than `count` (repeats). This is what lets the NCC/OLA hot
 // loops be unit-stride and vectorize.
+//
+// len == 0 is UB (modulo zero) and intentionally unguarded -- the hot path
+// is memcpy runs, and a branch here fires per grain. Callers (the engine)
+// never pass an empty loop; tests that do must skip the call.
 static inline void wsolaGather(const float *loop, long len, long start,
                                long count, float *dst)
 {

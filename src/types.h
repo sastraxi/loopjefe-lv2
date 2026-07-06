@@ -16,7 +16,7 @@
 #include <lv2/urid/urid.h>
 #include <lv2/time/time.h>
 #include <string.h>
-#include <rubberband/RubberBandStretcher.h>
+#include "wsola.h"
 #if defined(__APPLE__) || defined(_WIN32)
 #define MAXLONG LONG_MAX
 #else
@@ -55,19 +55,12 @@ typedef float LADSPA_Data;
 // ports carry unbounded floats, so nothing clamps this internally.
 #define OVERDUB_DECAY 1.0
 
-// How far a tempo ratio can sit from 1.0 before the pitch stretch engages
-// (see docs/tempo-follow-plan.md "Tempo follow (stretch)"). Below this,
-// the phase map alone (already active at all ratios) is close enough that
-// stretching would cost CPU for an inaudible correction.
+// How far a tempo ratio can sit from 1.0 before the pitch stretch engages.
+// Below this, the phase map alone (already active at all ratios) is close
+// enough that stretching would cost CPU for an inaudible correction.
 #define STRETCH_RATIO_EPS 0.0005
 
-// Below this ratio (target bpm / recorded bpm), the render cache is skipped
-// entirely and playback falls back to the raw/resample path -- see
-// docs/tempo-follow-plan.md "Ratio floor". No upper bound: faster tempos
-// aren't a memory problem, only much slower ones are.
-#ifndef MIN_STRETCH_RATIO
-#define MIN_STRETCH_RATIO 0.2
-#endif
+
 
 // settle time for tap trigger (trigger if two changes
 // happen within at least X samples)
@@ -132,7 +125,7 @@ typedef struct _LoopChunk {
     // current position is double to support alternative rates easier
     double dCurrPos;
 
-    // Tempo-follow stretch facet (see docs/tempo-follow-plan.md).
+    // Tempo-follow stretch facet.
     // recorded_bpm is the host transport bpm sampled at the moment this
     // chunk's capture closed. 0 = free-run / no anchor (bypass stretch).
     // Lives per-chunk (not per-EngineState) because the undo/redo stack
@@ -140,11 +133,10 @@ typedef struct _LoopChunk {
     // which chunk is head, so it swaps which ratio is in force.
     double recorded_bpm;
 
-    // Phase anchoring (see docs/tempo-follow-plan.md "Phase anchoring
-    // (drift elimination)"). anchor_beat is the host's absolute musical
-    // position (bar*beats_per_bar + bar_beat) at the moment this chunk's
-    // capture closed (where dCurrPos == 0 by definition); loop_beats is
-    // the loop's musical span (rounded_bars * beats_per_bar). Both are
+    // Phase anchoring (drift elimination). anchor_beat is the host's absolute
+    // musical position (bar*beats_per_bar + bar_beat) at the moment this
+    // chunk's capture closed (where dCurrPos == 0 by definition); loop_beats
+    // is the loop's musical span (rounded_bars * beats_per_bar). Both are
     // only meaningful when recorded_bpm > 0 -- a free-run take has no
     // transport to anchor to. Storing loop_beats directly (rather than
     // re-deriving it from recorded_bpm and the sample length) means the
@@ -152,38 +144,13 @@ typedef struct _LoopChunk {
     double anchor_beat;
     double loop_beats;
 
-    // Heap-allocated Rubber Band R3 state, one instance per audio channel.
-    // With the planar layout each channel's audio is already a contiguous
-    // slab (pLoopStart[c]), fed straight to this channel's stretcher with no
-    // de-interleave step. Created lazily on the first block that actually
-    // needs to stretch this chunk. Kept alive across undo/redo (so redo
-    // restores a warmed stretcher); only freed on the destroy paths (see
-    // clearLoopChunks). NULL = not yet created. Can't be embedded inline in
-    // LoopChunk -- that would break the bump-allocator arithmetic.
-    RubberBand::RubberBandStretcher * pStretcher[NUM_CHANNELS];
-
-    // Render-cache bridge (see docs/tempo-follow-plan.md "Render cache"):
-    // one side buffer per channel, each holding this chunk's audio
-    // pitch-preserved and time-stretched to `cached_bpm` (0 = empty/stale).
-    // Both channels are filled and read in lockstep, so
-    // the position bookkeeping (lCacheLength/lCacheCapacity/lRenderPos,
-    // counted in per-channel frames, not interleaved samples) stays
-    // shared across the two buffers/stretchers -- "two buffers, one
-    // cursor". Filled a sliver at a time by ensureStretchCacheFilled() as
-    // the playhead needs it, not all at once. Freed alongside pStretcher
-    // on the same destroy paths.
-    double cached_bpm;
-    LADSPA_Data * pCacheStart[NUM_CHANNELS];
-    unsigned long lCacheLength;
-    unsigned long lCacheCapacity;
-    unsigned long lRenderPos;
-    // Per-channel append cursor into pCacheStart[c] (retrieve() output is
-    // pulled from each channel's stretcher independently, so one channel
-    // can end up momentarily ahead of the other within a single feed --
-    // this tracks each channel's own write position so a later feed never
-    // re-visits and overwrites already-fetched samples). lCacheLength
-    // (the publicly-read "how much is safe to play") is the min of these.
-    unsigned long lChanWritten[NUM_CHANNELS];
+    // Heap-allocated WSOLA voice, one per audio channel. Created lazily on
+    // the first block that actually needs to stretch this chunk. Kept alive
+    // across undo/redo (so redo restores a warmed voice); only freed on the
+    // destroy paths (see clearLoopChunks). NULL = not yet created. Can't be
+    // embedded inline in LoopChunk -- that would break the bump-allocator
+    // arithmetic.
+    Wsola * pVoice[NUM_CHANNELS];
 
     // the loop where we should be frontfilled and backfilled from
     struct _LoopChunk* srcloop;

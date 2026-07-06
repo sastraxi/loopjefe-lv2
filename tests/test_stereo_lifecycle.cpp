@@ -1,5 +1,5 @@
 /* test_stereo_lifecycle.cpp -- the regression net for the interleaved->planar
-   buffer refactor (docs/planar-buffer-refactor.md). Every other engine test
+   buffer refactor. Every other engine test
    except test_tempo_follow_stereo.cpp runs at NUM_CHANNELS=1, where the
    interleaved-vs-planar distinction collapses (stride 1); and the existing
    stereo test uses a silence-on-one-channel oracle that can't see a frame

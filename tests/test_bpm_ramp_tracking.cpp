@@ -16,17 +16,14 @@
 
    What this test deliberately does NOT assert -- CHARACTERIZATION of a
    known limitation: seam/sample continuity of the *stretched audio* under
-   a ramp. A distinct BPM every block makes the play path regenerate the
-   whole Rubber Band cache each block (startStretchCacheGeneration fires
-   whenever cached_bpm != transport_bpm, which reset()s the stretcher), so
-   the phase vocoder never settles and adjacent output samples can jump by
+   a ramp. A distinct BPM every block makes the play path re-seed the WSOLA
+   voice each block (the nudge-to-reseed threshold is exceeded), so the
+   overlap-add never settles and adjacent output samples can jump by
    nearly full scale. That is not the loop-seam crossfade failing -- it's
-   the stretcher thrashing. The crossfade's click-masking is a *unity-rate*
+   the WSOLA thrashing. The crossfade's click-masking is a *unity-rate*
    property, covered by test_seam_continuity.cpp. Here we only require the
    output stay finite and bounded (no NaN/inf, no runaway) under that
-   thrash. If the engine ever smooths tempo-follow across bpm changes
-   (interpolate the ratio instead of regenerating the cache), a real
-   continuity bound belongs here and this comment comes out.
+   thrash.
 
    GPL, same as the rest of the repo. */
 

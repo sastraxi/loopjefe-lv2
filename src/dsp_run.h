@@ -11,7 +11,6 @@
 #include "types.h"
 #include "transport.h"
 #include "memory.h"
-#include "stretch.h"
 #include "state_machine.h"
 
 /*****************************************************************************/
@@ -291,8 +290,7 @@ void LoopJefePlugin::run(LV2_Handle instance, uint32_t SampleCount)
 
                                 // use our self as the source (we have been filled by the call above)
                                 // OVERDUB_CLOSE falls through to this same audio path (the layer
-                                // keeps summing through the close-pending window, see
-                                // docs/state-machine-redesign.md).
+                                // keeps summing through the close-pending window).
                                 fOutputSample = fWet  *  *(loop->pLoopStart[c] + lCurrPos)
                                     + plugin->dryVolumeCoef * fInputSample;
 
@@ -351,7 +349,7 @@ void LoopJefePlugin::run(LV2_Handle instance, uint32_t SampleCount)
 
                         double dTempoRate = fRate;
                         double stretchRatio = 1.0;
-                        bool useStretchCache = false;
+                        bool useWsola = false;
                         if (anchorablePlayState && loop->recorded_bpm > 0.0
                             && loop->loop_beats > 0.0
                             && plugin->transport_valid && plugin->transport_rolling
@@ -370,15 +368,18 @@ void LoopJefePlugin::run(LV2_Handle instance, uint32_t SampleCount)
                             dTempoRate = fRate * ratio;
                             stretchRatio = ratio;
 
-                            // Bypass (raw buffer) at unity ratio; otherwise a
-                            // new bpm starts a fresh cache generation that
-                            // fills incrementally as the playhead needs it
-                            // (see ensureStretchCacheFilled).
-                            if (fabs(ratio - 1.0) > STRETCH_RATIO_EPS && ratio >= MIN_STRETCH_RATIO) {
-                                if (loop->cached_bpm != plugin->transport_bpm) {
-                                    startStretchCacheGeneration(loop, pLS->fSampleRate, plugin->transport_bpm);
+                            // Bypass (raw buffer) at unity ratio; otherwise
+                            // engage the WSOLA voice.
+                            if (fabs(ratio - 1.0) > STRETCH_RATIO_EPS) {
+                                useWsola = true;
+                                // Lazily allocate + init the voice on first engage.
+                                for (unsigned c = 0; c < NUM_CHANNELS; c++) {
+                                    if (!loop->pVoice[c]) {
+                                        loop->pVoice[c] = (Wsola *) malloc(sizeof(Wsola));
+                                        wsolaInit(loop->pVoice[c], pLS->fSampleRate);
+                                        wsolaReseed(loop->pVoice[c], loop->dCurrPos);
+                                    }
                                 }
-                                useStretchCache = (loop->pCacheStart[0] != NULL);
                             }
                         }
 
@@ -419,20 +420,19 @@ void LoopJefePlugin::run(LV2_Handle instance, uint32_t SampleCount)
                             // fill loops if necessary (all channels, once)
                             fillLoops(pLS, loop, lCurrPos);
 
-                            // Frame position both channels' cache reads share
-                            // ("two buffers, one cursor"). dCurrPos is already a
-                            // frame count (planar layout), so no /NUM_CHANNELS.
-                            unsigned long lCacheIdx = 0;
-                            double dCacheFrac = 0.0;
-                            if (useStretchCache) {
-                                double dCacheFramePos = loop->dCurrPos / stretchRatio;
-                                lCacheIdx = (unsigned long) dCacheFramePos;
-                                ensureStretchCacheFilled(loop, lCacheIdx + 1);
-                                if (loop->lCacheLength > 0) {
-                                    if (lCacheIdx >= loop->lCacheLength) {
-                                        lCacheIdx = loop->lCacheLength - 1;
+                            // WSOLA: nudge anaPos toward dCurrPos; reseed if
+                            // the gap exceeds the search radius.
+                            if (useWsola) {
+                                for (unsigned c = 0; c < NUM_CHANNELS; c++) {
+                                    Wsola *v = loop->pVoice[c];
+                                    if (v) {
+                                        double gap = loop->dCurrPos - v->anaPos;
+                                        if (fabs(gap) > (double) v->seekMax) {
+                                            wsolaReseed(v, loop->dCurrPos);
+                                        } else if (fabs(gap) > 0.5) {
+                                            v->anaPos += gap * 0.1;
+                                        }
                                     }
-                                    dCacheFrac = dCacheFramePos - lCacheIdx;
                                 }
                             }
 
@@ -440,19 +440,12 @@ void LoopJefePlugin::run(LV2_Handle instance, uint32_t SampleCount)
                                 fInputSample = pfInputs[c][lSampleIndex];
 
                                 LADSPA_Data fInterpSample;
-                                if (useStretchCache) {
-                                    // lCacheIdx/dCacheFrac computed once above for
-                                    // both channels ("two buffers, one cursor");
-                                    // only which per-channel buffer to read differs.
-                                    if (loop->lCacheLength == 0) {
-                                        fInterpSample = 0.0;
-                                    } else {
-                                        unsigned long lCacheNext =
-                                            (lCacheIdx + 1 >= loop->lCacheLength) ? 0 : lCacheIdx + 1;
-                                        fInterpSample =
-                                            *(loop->pCacheStart[c] + lCacheIdx) * (1.0 - dCacheFrac)
-                                            + *(loop->pCacheStart[c] + lCacheNext) * dCacheFrac;
-                                    }
+                                if (useWsola && loop->pVoice[c]) {
+                                    // Process one sample at a time through WSOLA
+                                    // (wsolaProcess handles grain scheduling internally).
+                                    wsolaProcess(loop->pVoice[c],
+                                        loop->pLoopStart[c], (long) loop->lLoopLength,
+                                        stretchRatio, &fInterpSample, 1);
                                 } else {
                                     double dFracPos = fmod(loop->dCurrPos, loop->lLoopLength) - lCurrPos;
                                     unsigned long lNextPos = (lCurrPos + 1 >= loop->lLoopLength) ? 0 : lCurrPos + 1;
