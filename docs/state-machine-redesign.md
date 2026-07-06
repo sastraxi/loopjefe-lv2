@@ -156,7 +156,7 @@ hardcoded cutoff.
 
 ## 7. Mirror rule
 
-`src/shared.h` edited once (all state-machine logic lives there). Port enum +
+`src/state_machine.h` edited once (all state-machine logic lives there). Port enum +
 TTL changes mirrored to `loopjefe-2x2/src/loopjefe.cpp` and both `.ttl` files
 (stereo adds `IN_1`/`OUT_1` only; `advance`/`state`/`reset` are identical).
 
@@ -174,7 +174,7 @@ TTL changes mirrored to `loopjefe-2x2/src/loopjefe.cpp` and both `.ttl` files
 
 - Breaking: `state` port index/direction changes, new `advance` port added.
   Saved mod-host sessions and CC mappings need remapping. Note in README.
-- No new deps (Rubber Band is the *stretch* facet, separate from this).
+- No new deps.
 
 ## 10. Open pi-Stomp-side work (out of scope for this repo)
 

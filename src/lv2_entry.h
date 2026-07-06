@@ -1,9 +1,10 @@
 /* lv2_entry.h -- LV2 plugin descriptor, lv2_descriptor() export, and the
    lifecycle methods (instantiate/activate/deactivate/cleanup/
-   extension_data). Included by shared.h.
+   extension_data). Engine top-of-tree: each bundle .cpp includes this
+   directly. Pulls in dsp_run.h, which pulls in everything else.
 
    Copyright (C) 2002 Jesse Chappell <jesse@essej.net>
-   GPL — see shared.h header. */
+   GPL. */
 
 #pragma once
 

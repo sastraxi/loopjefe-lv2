@@ -20,7 +20,7 @@
    integrating a counter, so the wrap coincides with the transport
    downbeat *by construction* -- zero cumulative drift.
 
-   Cases fail until shared.h grows the transport-anchored phase read in
+   Cases fail until the engine grows the transport-anchored phase read in
    STATE_PLAY; that's the red half of the TDD cycle.
 
    GPL, same as the rest of the repo. */

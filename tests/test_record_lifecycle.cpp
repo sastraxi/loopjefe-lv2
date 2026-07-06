@@ -11,7 +11,7 @@
        several loops stay measure-locked;
      - a tap while armed or close-pending aborts the take to Empty.
 
-   Several cases fail until shared.h grows the quantized-stop / phase logic;
+   Several cases fail until the engine grows the quantized-stop / phase logic;
    that's the red half of the TDD cycle.
 
    GPL, same as the rest of the repo. */

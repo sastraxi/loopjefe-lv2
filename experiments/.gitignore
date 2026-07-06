@@ -1,7 +1,0 @@
-# rubber band experiments
-rb_*
-!rb_*.cpp
-
-# wsola experiments
-wsola_*
-!wsola_*.cpp

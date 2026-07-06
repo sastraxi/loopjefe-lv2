@@ -8,7 +8,7 @@
    cancel the arm, preserve the playback cursor). Overdub is now reachable
    via reset-from-Playback, so its cases are testable end-to-end.
 
-   Exercises the capture_bpm / capture_bpm_set fields added to shared.h.
+   Exercises the capture_bpm / capture_bpm_set fields on the engine.
 
    GPL, same as the rest of the repo. */
 

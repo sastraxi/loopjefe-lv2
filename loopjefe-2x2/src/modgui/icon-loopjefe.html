@@ -74,8 +74,8 @@
 <script type="text/javascript">
 setTimeout(function () {
     var STATES = ["empty", "recording", "overdub", "playback", "stopped"];
-    // Mirrors the plugin's surface_state advance table (src/shared.h,
-    // switch (plugin->surface_state) in run()): 4-state cycle, Overdub
+    // Mirrors the plugin's surface_state advance table
+    // (src/dsp_run.h, the switch in run()): 4-state cycle, Overdub
     // is skipped. Empty is only reachable via the reset port. The
     // Overdub index (2) is still in STATES for the safety-net case in
     // the engine (where anything ever lands on SURFACE_OVERDUB, the

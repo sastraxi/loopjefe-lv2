@@ -40,7 +40,7 @@ enum {IN_0, OUT_0, STATE, ADVANCE, RESET, UNDO, REDO, DRY_LEVEL, TIME_INFO, PLUG
 #define PLUGIN_AUDIO_PORT_COUNT     2
 #define PLUGIN_CONTROL_PORT_COUNT   PLUGIN_PORT_COUNT - PLUGIN_AUDIO_PORT_COUNT
 
-#include "../../src/shared.h"
+#include "../../src/lv2_entry.h"
 
 /**********************************************************************************************************************************************************/
 

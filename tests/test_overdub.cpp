@@ -2,7 +2,7 @@
    ("sums layers", "undo pops
    layer", "inherits source length"). test_overdub_lifecycle.cpp already
    covers the state-machine transitions; this file checks the actual
-   sample content the STATE_OVERDUB block (shared.h) produces.
+   sample content the STATE_OVERDUB block (dsp_run.h) produces.
 
    GPL, same as the rest of the repo. */
 
@@ -38,7 +38,7 @@ static void test_record_writes_input()
 }
 
 // Overdub sums the new input on top of the existing layer:
-// `new = input + OVERDUB_DECAY * feedback * old` (shared.h). OVERDUB_DECAY
+// `new = input + OVERDUB_DECAY * feedback * old` (dsp_run.h). OVERDUB_DECAY
 // defaults to 1.0 -- pure additive layering, no automatic decay (matches
 // the RC-505's OVERDUB "ensemble" mode) -- and feedback defaults to 1.0
 // when pfFeedback is unconnected, so one full pass gives exactly A+B.

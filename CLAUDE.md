@@ -17,27 +17,27 @@ Chappell's copyright headers). Two bundles sharing one engine: `loopjefe`
 
 ## Layout — the one rule that matters
 
-`src/shared.h` is the shared engine: edit it once. Everything else is
-duplicated per bundle — **any change to `loopjefe/src/` (loopjefe.cpp,
-*.ttl, modgui) must be mirrored in `loopjefe-2x2/src/`**, adapted for
-stereo (`NUM_CHANNELS=2`, `*_1` port variants).
+`src/lv2_entry.h` is the engine top-of-tree: every domain header
+below it is pulled in transitively. Everything else is duplicated per
+bundle — **any change to `loopjefe/src/` (loopjefe.cpp, *.ttl, modgui)
+must be mirrored in `loopjefe-2x2/src/`**, adapted for stereo
+(`NUM_CHANNELS=2`, `*_1` port variants).
 
-`src/shared.h` is now an **umbrella header** that includes seven domain
-headers in dependency (DAG) order. The domains:
+The engine is decomposed into six domain headers in dependency (DAG)
+order, each header's own `#include`s enforce the ordering:
 
 | File | Owns |
 |---|---|
-| `src/types.h` | `LADSPA_Data`, constants, `STATE_*` enums, `LoopChunk`, `LoopJefe`, `TimeURIs`, `LoopJefePlugin` class decl |
+| `src/types.h` | `LADSPA_Data`, constants, `STATE_*` enums, `LoopChunk`, `LoopJefe`, `TimeURIs`, `LoopJefePlugin` class decl (root; pulls in `wsola.h`) |
 | `src/transport.h` | `readTimeInfo` + phase-map helpers |
 | `src/memory.h` | `LoopChunk` lifecycle: arena, push/pop/clear/undo/redo, `fillLoops`, `beginOverdub` |
-| `src/stretch.h` | Rubber Band render cache (tempo-follow) |
 | `src/state_machine.h` | `runControlPorts()` — per-block control-port preamble (tempo-change abort, reset/advance/undo/redo, surface-cycle transitions) |
 | `src/dsp_run.h` | `run()` — prologue + `runControlPorts()` call + DSP switch + tail (the integration point; includes all leaves) |
-| `src/lv2_entry.h` | `Descriptor`, `lv2_descriptor()`, instantiate/activate/deactivate/cleanup/extension_data |
+| `src/lv2_entry.h` | `Descriptor`, `lv2_descriptor()`, instantiate/activate/deactivate/cleanup/extension_data (engine top-of-tree; bundles include this directly) |
 
 The bundle `.cpp` sets `NUM_CHANNELS` / `PLUGIN_URI` /
 the port enum / `PLUGIN_AUDIO_PORT_COUNT` / `PLUGIN_CONTROL_PORT_COUNT`
-*before* `#include "../../src/shared.h"`; the domain headers all key off
+*before* `#include "../../src/lv2_entry.h"`; the domain headers all key off
 those preprocessor definitions. Edit any domain header once; both bundles
 recompile against it.
 
@@ -70,10 +70,10 @@ renaming the directory is the whole rename.
 - `cd tests && make check` — in-process engine unit tests (no JACK/mod-host;
   drives `run()` directly via a fake LV2 host). See `tests/README.md` for
   how the host works and how to add a test. **Run after any change to
-  `src/*.h`** (the umbrella includes all of them; the test Makefile tracks
-  `shared.h` so any domain header change forces a rebuild).
-- `cd experiments && make run` — throwaway probes that link `librubberband`
-  directly (kept out of `make check`); back `docs/tempo-follow-streaming.md`.
+  `src/*.h`** (the test Makefile's `$(wildcard ../src/*.h)` dep line
+  forces a rebuild of every test).
+- `cd experiments && make run` — throwaway probes (kept out of `make check`);
+  back `docs/tempo-follow-streaming.md`.
 
 ## State machine — the contract (don't regress these)
 

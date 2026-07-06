@@ -1,9 +1,9 @@
 /* memory.h -- LoopChunk lifecycle: bump-allocator arena, push/pop/clear,
    undo/redo, fillLoops, beginOverdub/beginReplace, transitionToNext.
-   Included by shared.h.
+   Pulled in by state_machine.h and dsp_run.h.
 
    Copyright (C) 2002 Jesse Chappell <jesse@essej.net>
-   GPL — see shared.h header. */
+   GPL. */
 
 #pragma once
 

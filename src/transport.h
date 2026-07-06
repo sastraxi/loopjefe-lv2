@@ -1,8 +1,8 @@
 /* transport.h -- time:Position atom reading + phase-map helpers.
-   Included by shared.h.
+   Pulled in by state_machine.h and dsp_run.h.
 
    Copyright (C) 2002 Jesse Chappell <jesse@essej.net>
-   GPL — see shared.h header. */
+   GPL. */
 
 #pragma once
 

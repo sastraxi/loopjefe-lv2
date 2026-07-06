@@ -1,7 +1,7 @@
 /* test_wsola.cpp -- unit tests for the self-contained WSOLA voice in
-   src/wsola.h. Direct-link: no LV2 host, no rubberband, no engine TU --
-   wsola.h is a raw-buffer API, so this is the one test in the suite that
-   does NOT `#include "../loopjefe/src/loopjefe.cpp"`. Built with
+   src/wsola.h. Direct-link: no LV2 host, no engine TU -- wsola.h is a
+   raw-buffer API, so this is the one test in the suite that does NOT
+   `#include "../loopjefe/src/loopjefe.cpp"`. Built with
    -fsanitize=address,undefined so the short-loop / degenerate-length
    cases earn their keep.
 

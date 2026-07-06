@@ -47,15 +47,10 @@ four ways that will prevent the plugin from loading (with no visible error in th
    make MACOS=true install -C loopjefe-2x2 LV2DIR="$HOME/Library/Audio/Plug-Ins/LV2"
    ```
 
-3. **External dylib deps must be static-linked.** MOD Desktop is a
-   code-signed, hardened-runtime app. macOS strips `DYLD_*` env vars when
-   launching signed apps, so homebrew's `@rpath/librubberband.3.dylib` /
-   `libsamplerate.0.dylib` won't resolve when the host `dlopen`s our
-   bundle — `lilv_lib_open()` fails and the plugin is dropped. The
-   Makefiles static-link the `.a` archives under `MACOS=true` so the
-   bundled `loopjefe.dylib` depends only on system frameworks (matching
-   MOD's own `sooperlooper-2x2.dylib`). The dylib grows from ~36 KB to
-   ~1.8 MB (all Rubber Band R3 code); that's expected. Verify with
+3. **No external dylib deps to chase.** The engine has no third-party
+   libraries (the tempo-follow stretcher is hand-rolled in `src/wsola.h`).
+   The bundled `loopjefe.dylib` therefore depends only on system
+   frameworks, matching MOD's own `sooperlooper-2x2.dylib`. Verify with
    `otool -L loopjefe.dylib` — only `libSystem`, `libc++`, and
    `Accelerate` should appear.
 

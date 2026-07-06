@@ -1,8 +1,8 @@
 # loopjefe engine tests
 
-In-process unit tests for the loopjefe engine (`src/shared.h`). They run
-the plugin's `run()` directly with fake ports so they're fast, deterministic,
-and portable.
+In-process unit tests for the loopjefe engine (`src/*.h`, top-of-tree
+`src/lv2_entry.h`). They run the plugin's `run()` directly with fake ports
+so they're fast, deterministic, and portable.
 
 ## Running
 
@@ -13,8 +13,8 @@ make clean
 ```
 
 Requires `lv2` headers (`pkg-config --cflags lv2`; `brew install lv2` on
-macOS). Nothing else — LV2 is header-only, and the tests don't yet link
-`librubberband`.
+macOS). Nothing else — LV2 is header-only, and the tests have no
+external library dependencies.
 
 ## Why this works
 
@@ -39,16 +39,16 @@ That's all `lv2_test_host.h` does.
 | `test_overdub_lifecycle.cpp` | The reachable overdub path: arm from Playback fires at the next loop wrap; advance-during-arm cancels; commit quantizes to wrap; second advance force-closes (keeps layer, no phase reset); reset aborts the layer (cursor preserved). |
 | `test_seam_continuity.cpp` | The anti-glitch crossfade at the loop wrap: a ramp-content loop whose only large discontinuity is the seam plays back with a bounded max sample-to-sample delta (~0.003) far under the raw seam jump (~0.8) — proving the wet-gain ramp masks the click. |
 | `test_overdub_tempo_follow.cpp` | **Characterization.** Overdub while the loop is tempo-shifted (record 120, play 140): stretcher engages, overdub reaches STATE_OVERDUB without hanging, and the layer inherits the *source's* recorded_bpm (120) / un-stretched length — pinning that capture sums against the raw buffer, not the stretched timeline (the suspect interaction; see `docs/running-on-mod-desktop.md`). |
-| `test_bpm_ramp_tracking.cpp` | Playback under a *continuous* BPM ramp (120→180): the cursor equals the musical-phase prediction `frac(phase01·L + BLK·ratio)` to the frame with zero drift over hundreds of blocks (position is reseeded from transport phase, never integrated from rate). Also pins robustness — output stays finite/bounded. **Characterization:** deliberately does *not* assert stretched-audio sample continuity, because a distinct bpm every block regenerates the Rubber Band cache each block and it isn't click-free; the seam crossfade is a unity-rate property (`test_seam_continuity.cpp`). |
+| `test_bpm_ramp_tracking.cpp` | Playback under a *continuous* BPM ramp (120→180): the cursor equals the musical-phase prediction `frac(phase01·L + BLK·ratio)` to the frame with zero drift over hundreds of blocks (position is reseeded from transport phase, never integrated from rate). Also pins robustness — output stays finite/bounded. **Characterization:** deliberately does *not* assert stretched-audio sample continuity, because a distinct bpm every block reseeds the WSOLA voice each block and the overlap-add never settles; the seam crossfade is a unity-rate property (`test_seam_continuity.cpp`). |
 | `Makefile` | Builds each `test_*.cpp` into its own binary. |
 
 Each `test_*.cpp` `#include`s the **bundle** TU (`../loopjefe/src/loopjefe.cpp`),
-which in turn includes `../src/shared.h`. That single include pulls in the
+which in turn includes `../src/lv2_entry.h`. That single include pulls in the
 port enum, the plugin class, and `connect_port`. Because the whole engine
 lands in one translation unit, **two test files can't be linked together** —
 so each is its own executable (the Makefile does exactly that). All tests
-run against the **mono** bundle; the stereo `loopjefe-2x2` shares
-`shared.h`, so engine-logic coverage carries over.
+run against the **mono** bundle; the stereo `loopjefe-2x2` shares the
+engine headers, so engine-logic coverage carries over.
 
 ## `PluginHost` cheat-sheet
 
@@ -83,7 +83,7 @@ Two mechanics worth knowing:
 ### Transport atom quirk
 
 The engine matches `time:Position` on `ev->body.type` rather than the
-conventional `atom:Object` + `otype` pair (`shared.h` `readTimeInfo`). So
+conventional `atom:Object` + `otype` pair (`transport.h` `readTimeInfo`). So
 `set_transport()` forges an object and then **patches the event's atom type**
 to `time:Position` — matching what the engine actually consumes. If you
 ever wire this against a real host and transport looks dead, that mismatch

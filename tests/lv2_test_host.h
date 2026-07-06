@@ -1,5 +1,5 @@
 /* lv2_test_host.h -- minimal in-process LV2 host for exercising the
-   loopjefe engine (shared.h) without JACK / mod-host.
+   loopjefe engine (the headers under src/) without JACK / mod-host.
 
    Usage: a test .cpp includes the plugin bundle TU first, then this:
 

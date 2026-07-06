@@ -1,10 +1,10 @@
 /* dsp_run.h -- the per-block audio engine: run() (preamble + state-machine
    handling + DSP switch + dry-level lowpass tail). Writes straight to the
-   per-channel output ports (planar layout, no de-interleave). The integration
-   point that pulls in all engine subsystems. Included by shared.h.
+   per-channel output ports (planar layout, no de-interleave). Pulled in
+   by lv2_entry.h.
 
    Copyright (C) 2002 Jesse Chappell <jesse@essej.net>
-   GPL — see shared.h header. */
+   GPL. */
 
 #pragma once
 

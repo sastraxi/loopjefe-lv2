@@ -1,7 +1,9 @@
-/* types.h -- shared engine type definitions. Included by shared.h.
+/* types.h -- engine type definitions. Root of the engine DAG
+   (structs, enums, constants, LoopChunk, LoopJefe, TimeURIs, the
+   LoopJefePlugin class declaration; pulls in wsola.h).
 
    Copyright (C) 2002 Jesse Chappell <jesse@essej.net>
-   GPL — see shared.h header. */
+   GPL. */
 
 #pragma once
 

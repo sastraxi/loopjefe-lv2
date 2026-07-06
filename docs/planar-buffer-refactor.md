@@ -9,8 +9,9 @@ maximizes code sharing between the two bundles.
 
 ## Context
 
-The interleaved assumption lives entirely in **one file**, `src/shared.h`
-(2824 lines), which both bundles compile with `NUM_CHANNELS` = 1 or 2.
+The interleaved assumption lives entirely in the engine sources under
+`src/*.h` (which both bundles compile with `NUM_CHANNELS` = 1 or 2 via
+the umbrella `lv2_entry.h` each bundle includes).
 The per-bundle `.cpp` wrappers (82/89 lines) are already near-identical
 and differ only in the port enum and `in_1`/`out_1` wiring. The host
 already feeds planar ports — **interleaving is purely engine-internal**:
@@ -23,17 +24,17 @@ refactor.
 The just-landed tempo-follow stretch work (commits `73a1a2a`, `7a341a0`,
 `8bbf922`) is where the interleave tax is most visible:
 
-- The Rubber Band feed in `stretch.h`'s `ensureStretchCacheFilled` does an
-  explicit on-the-fly de-interleave (`[i*NUM_CHANNELS+c]`, the only such
-  site in the engine).
+- The WSOLA voice in `src/wsola.h` reads from `pLoopStart[c]` per frame;
+  in the current interleaved layout the stereo read path is the only
+  site that has to fan channels out from a single contiguous slab.
 - The playback cursor bridge in `dsp_run.h`'s `STATE_PLAY` block pays a
   `/NUM_CHANNELS` division every output sample because `dCurrPos` is in
-  interleaved units while the render cache `pCacheStart[c]` is already
-  planar.
-- `docs/tempo-follow-plan.md:506-514` flagged the
+  interleaved units while the WSOLA voice's per-channel reads are
+  already planar.
+- `docs/tempo-follow-streaming.md` flagged the
   planar-cache-vs-interleaved-source mismatch as a "real gap, not yet
   hit because no test exercises 2x2 tempo-follow" — the gap this
-  refactor closes by making `pLoopStart[c]` and `pCacheStart[c]` share
+  refactor closes by making `pLoopStart[c]` and the WSOLA reads share
   one indexing idiom.
 
 ## Goal state
@@ -75,7 +76,8 @@ The just-landed tempo-follow stretch work (commits `73a1a2a`, `7a341a0`,
    final de-interleave block.
 3. **Sequencing: lands now, as successor to the tempo-follow work.**
    Tempo-follow just landed (HEAD = `8bbf922`, tree clean). This refactor
-   closes the `tempo-follow-plan.md:506-514` gap directly.
+   closes the `docs/tempo-follow-streaming.md` "planar vs interleaved
+   source" gap directly.
 4. **Tests: full stereo lifecycle with per-sample audio asserts**,
    recorded before the refactor as the regression net.
 
@@ -112,16 +114,14 @@ The just-landed tempo-follow stretch work (commits `73a1a2a`, `7a341a0`,
    "easy to break" — the test net from step 1 is the guard. Build +
    test.
 
-4. **Stretch path: de-interleave → direct copy.**
-   `startStretchCacheGeneration` (`:553-605`): `numFrames =
-   loop->lLoopLength` (drop the `/NUM_CHANNELS` at `:581`).
-   `ensureStretchCacheFilled` (`:607-659`): the `[i*NUM_CHANNELS+c]` at
-   `:633` becomes `*(loop->pLoopStart[c] + loop->lRenderPos + i)`;
-   drop the `deinterleaved[]` stack scratch (`:623`) and feed
-   `pLoopStart[c]` straight to Rubber Band. The guard at `:620` stays
-   channel-0-only (lockstep creation). Build + test — this is the step
-   that finally exercises 2x2 tempo-follow, closing the
-   `tempo-follow-plan.md:506-514` gap.
+4. **WSOLA read path: per-channel direct index.** The WSOLA voice in
+   `src/wsola.h` reads `pLoopStart[c][frame]` per grain; in the
+   interleaved layout the stereo read fans the single slab out by
+   hand. After the refactor, `pLoopStart[c]` is already per-channel, so
+   the fan-out disappears and the engine's stereo WSOLA path looks
+   identical to mono. Build + test — this is the step that finally
+   exercises 2x2 tempo-follow, closing the
+   `docs/tempo-follow-streaming.md` gap.
 
 5. **STATE_PLAY cursor bridge.** `:2329` becomes `dCacheFramePos =
    loop->dCurrPos / stretchRatio` (drop `/NUM_CHANNELS`). `:2298` phase

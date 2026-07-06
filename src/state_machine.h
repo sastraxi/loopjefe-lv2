@@ -1,10 +1,10 @@
 /* state_machine.h -- the per-block control-port preamble: tempo-change-
    mid-capture abort, reset/advance/undo/redo edge handling, surface-cycle
    transitions, and the state-output write. Called once at the top of
-   run() before the DSP switch. Included by shared.h (via dsp_run.h).
+   run() before the DSP switch. Pulled in by dsp_run.h.
 
    Copyright (C) 2002 Jesse Chappell <jesse@essej.net>
-   GPL — see shared.h header. */
+   GPL. */
 
 #pragma once
 

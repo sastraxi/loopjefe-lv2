@@ -1,15 +1,17 @@
-// wsola_proto.cpp -- hand-rolled WSOLA time-stretch probe for the
-// tempo-follow rewrite (replacing Rubber Band; see
-// docs/tempo-follow-streaming.md and the "WSOLA is my choice" decision).
+// wsola_proto.cpp -- hand-rolled WSOLA time-stretch probe. Earlier
+// textbook-Hann/AMDF exploration; the production engine uses
+// src/wsola.h (Tukey/NCC, faster and click-cleaner). This file is
+// kept as a self-contained, single-file reference of the search
+// design. See docs/tempo-follow-streaming.md for the rationale.
 //
-// This does NOT link librubberband. It answers the three questions that
-// decide whether we hand-roll WSOLA into the engine:
+// It answers the three questions that decide whether we hand-roll
+// WSOLA into the engine:
 //
 //   A. Cross-wrap continuity  -- a periodic loop, stretched, stays
 //      continuous across many loop wraps (max adjacent |delta|).
 //   B. Re-seed cleanliness    -- jumping the input cursor to an arbitrary
 //      position P (the tempo-change / phase-map reseed) produces a clean
-//      handoff, with NO phase-integral to carry (the R3 failure).
+//      handoff, with NO phase-integral to carry.
 //   C. CPU as a real-time fraction -- synthesize N seconds of output,
 //      measure wall time; xN faster-than-real-time per voice tells us how
 //      many layers x channels fit in the budget (target: always-on).
@@ -19,10 +21,9 @@
 // overlap region to the natural continuation of the previous grain, and
 // Hann overlap-add. Its entire state is (analysis cursor, previous chosen
 // position, one overlap tail) -- all O(one grain), all reconstructible
-// from the loop buffer at P. That is the re-seedability Rubber Band denies.
+// from the loop buffer at P. That is the re-seedability the engine needs.
 //
-// Build: cd experiments && make wsola_proto && ./wsola_proto
-//        (or `make run` runs it alongside the rb_* probes)
+// Build: cd experiments && make run
 
 #include <cmath>
 #include <cstdio>
