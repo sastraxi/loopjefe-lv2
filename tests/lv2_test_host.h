@@ -294,7 +294,7 @@ struct PluginHost {
     void *voice()
     {
         LoopChunk *l = plugin()->pLS->headLoopChunk;
-        return l ? (void *) l->pVoice[0] : NULL;
+        return l ? (void *) l->pVoice : NULL;
     }
 
     // Drive a constant input value for the next run() calls.

@@ -61,9 +61,7 @@ static LoopChunk * pushNewLoopChunk(LoopJefe* pLS, unsigned long initLength)
 
     // raw bump-allocated memory -- pointer fields must be explicitly
     // zeroed, they don't come back as NULL for free.
-    for (unsigned c = 0; c < NUM_CHANNELS; c++) {
-        loop->pVoice[c] = NULL;
-    }
+    loop->pVoice = NULL;
 
 
     //DBG(fprintf(stderr, "New head is %08x\n", (unsigned)loop);)
@@ -112,12 +110,10 @@ static void clearLoopChunks(LoopJefe *pLS)
 {
     LoopChunk *loop = pLS->headLoopChunk;
     while (loop) {
-        for (unsigned c = 0; c < NUM_CHANNELS; c++) {
-            if (loop->pVoice[c]) {
-                wsolaFree(loop->pVoice[c]);
-                free(loop->pVoice[c]);
-                loop->pVoice[c] = NULL;
-            }
+        if (loop->pVoice) {
+            wsolaFree(loop->pVoice);
+            free(loop->pVoice);
+            loop->pVoice = NULL;
         }
         loop = loop->prev;
     }

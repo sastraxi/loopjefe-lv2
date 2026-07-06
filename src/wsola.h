@@ -17,20 +17,20 @@
      sample from two imperfectly-aligned grains (the "warble"); a short
      aligned crossfade keeps the original waveform intact and confines
      blending to the seam the similarity search explicitly aligned.
-      Linear (equal-gain, not equal-power) tapers sum to unity across the
-      overlap -- the correct choice because the search makes the two sides
-      waveform-correlated, so they add coherently without a +3 dB bump.
+     Linear (equal-gain, not equal-power) tapers sum to unity across the
+     overlap -- the correct choice because the search makes the two sides
+     waveform-correlated, so they add coherently without a +3 dB bump.
 
-    - Similarity metric is normalized cross-correlation (corr / sqrt(norm)),
-      not AMDF. AMDF's only virtue was avoiding multiplies; on Cortex-A76 /
-      Apple Silicon the FMA units make multiplies free, and NCC does not
-      bias toward high-energy regions the way raw correlation / AMDF do.
-      The score returned below is corr*|corr|/norm -- SoundTouch's
-      sqrt-free approximation of corr/sqrt(norm): same sign, same argmax on
-      periodic content, but it weights the norm term twice and so biases
-      slightly toward low-energy candidates vs true NCC. Good enough in
-      practice (SoundTouch ships it); noted here so the search-quality test
-      asserts against the actual metric, not the textbook one.
+   - Similarity metric is normalized cross-correlation (corr / sqrt(norm)),
+     not AMDF. AMDF's only virtue was avoiding multiplies; on Cortex-A76 /
+     Apple Silicon the FMA units make multiplies free, and NCC does not
+     bias toward high-energy regions the way raw correlation / AMDF do.
+     The score returned below is corr*|corr|/norm -- SoundTouch's
+     sqrt-free approximation of corr/sqrt(norm): same sign, same argmax on
+     periodic content, but it weights the norm term twice and so biases
+     slightly toward low-energy candidates vs true NCC. Good enough in
+     practice (SoundTouch ships it); noted here so the search-quality test
+     asserts against the actual metric, not the textbook one.
 
    - The search is quick-seek: a coarse pass then a fine refine, so a wide
      search radius stays cheap.
@@ -47,9 +47,24 @@
      NEON on aarch64/armv8 -- same opcodes on RPi5 Cortex-A76 and Apple
      Silicon). No intrinsics required; profile before adding any.
 
-   - The whole state is (anaPos, one L-sample tail). O(one grain), fully
-     reconstructible from the loop buffer at any position -- this is the
-     re-seedability a phase vocoder denies, and the reason WSOLA was chosen.
+   - MULTI-CHANNEL: one Wsola voice owns all channels of a layer. The
+     similarity search runs ONCE per grain, summing corr and norm across
+     channels (SoundTouch's shape: a momentarily-silent channel can't
+     drag the search off because the other channel's energy still
+     contributes). All channels then synth at the SAME chosen offset, so
+     correlated stereo material keeps a stable image -- the per-channel
+     independent searches the old API forced would have smeared L vs R by
+     up to +/- seek. Channel count is runtime (int nch), not a compile-
+     time macro, so this header stays standalone-unit-testable (no NUM_CHANNELS
+     dependency); mono is nch=1 and collapses to exactly the single-channel
+     formula. Each channel keeps its own OLA tail and grain buffer (the
+     carry is content-specific), but timing, the offset, and the window
+     are shared.
+
+   - The whole state is (anaPos, one L-sample tail per channel). O(one
+     grain), fully reconstructible from the loop buffer at any position --
+     this is the re-seedability a phase vocoder denies, and the reason
+     WSOLA was chosen.
 
    NOT YET IMPLEMENTED (documented hook): transient preservation. WSOLA
    doubles transients when stretching and skips them when compressing. The
@@ -88,50 +103,60 @@ static inline double wsolaLerpClamp(double s, double lo_s, double hi_s,
     return v;
 }
 
-// One WSOLA voice = one channel of one layer. POD-friendly (no ctor/dtor):
-// zero the struct, call init(); it lives in heap memory the engine owns and
-// frees. All buffers are malloc'd once at
-// init and never resized -- process() is allocation-free.
-struct Wsola {
-    // --- config, fixed at init from the sample rate ---
-    double sampleRate;
-    int    L;            // overlap / seam crossfade length (samples)
-    int    HsMax;        // longest synthesis hop (slowest rate) -- buffer cap
-    int    NMax;         // longest grain = HsMax + L
-    int    seekMax;      // widest search radius (samples) -- buffer cap
-
-    // --- carried state (the entire memory horizon) ---
-    double anaPos;       // analysis read cursor into the loop (frames).
-                         // PUBLIC: the engine keeps this aligned to dCurrPos
-                         // (nudge it by the phase-map correction each block;
-                         // a nudge <= seek is absorbed by the search, a
-                         // larger one is a seek -> call reseed()).
-    long   prevChosen;   // last chosen grain start -- the ACTUAL read position
-                         // (anaPos is nominal; the difference is the search
-                         // offset). Reserved for the transient-preservation
-                         // hook (docs: "Open, tune-by-ear"): detecting
-                         // doubling/skipping needs the real analysis hop, not
-                         // the nominal one. Unused by v1's synth path.
-    bool   first;        // next grain is the engage grain: no search, and
-                         // emitted verbatim (flat front) so out[0] == loop[P]
-
-    // --- fixed scratch buffers (sized at init) ---
-    float *rampUp;       // [L] linear 0..1
-    float *rampDown;     // [L] linear 1..0  (rampUp + rampDown == 1: unity OLA)
+// Per-channel audio state: the OLA carry and grain buffers. Content-
+// specific, so each channel keeps its own; the search runs on channel 0
+// and the chosen offset is applied to all.
+struct WsolaChannel {
     float *tail;         // [L] carried seam: prev grain's last L, windowed down
     float *tmpl;         // [L] natural-continuation target for the NCC search
     float *gGrain;       // [NMax] wrap-resolved grain span
     float *gSearch;      // [2*seekMax + L] wrap-resolved search region
     float *pending;      // [HsMax] emitted-but-unconsumed output
-    int    pendingLen;
+};
+
+// One WSOLA voice = one layer, all channels. POD-friendly (no ctor/dtor):
+// zero the struct, call init(); it lives in heap memory the engine owns
+// and frees, exactly like the old pStretcher[c]. All buffers are malloc'd
+// once at init and never resized -- process() is allocation-free.
+struct Wsola {
+    // --- config, fixed at init from the sample rate + channel count ---
+    double sampleRate;
+    int    nch;          // channel count (runtime; mono = 1)
+    int    L;            // overlap / seam crossfade length (samples)
+    int    HsMax;        // longest synthesis hop (slowest rate) -- buffer cap
+    int    NMax;         // longest grain = HsMax + L
+    int    seekMax;      // widest search radius (samples) -- buffer cap
+
+    // --- carried state (the entire memory horizon) -- shared across channels
+    double anaPos;       // analysis read cursor into the loop (frames).
+                         // PUBLIC: the engine keeps this aligned to dCurrPos
+                         // (nudge it by the phase-map correction each block;
+                         // a nudge <= seek is absorbed by the search, a
+                         // larger one is a seek -> call reseed()).
+    long   prevChosen;   // last chosen grain start. Reserved for the
+                         // transient-preservation hook (needs the real
+                         // analysis hop, not the nominal anaPos). Unused by v1.
+    bool   first;        // next grain is the engage grain: no search, and
+                         // emitted verbatim (flat front) so out[0] == loop[P]
+    int    pendingLen;   // channels emit in lockstep
     int    pendingRead;
+
+    // --- fixed scratch buffers (sized at init) ---
+    float *rampUp;       // [L] linear 0..1  (shared; identical for every channel)
+    float *rampDown;     // [L] linear 1..0  (rampUp + rampDown == 1: unity OLA)
+    WsolaChannel *ch;    // [nch] per-channel audio state
 };
 
 // ---- lifecycle ------------------------------------------------------------
+// Forward decl: wsolaInit calls wsolaFree on partial-failure cleanup.
+static inline void wsolaFree(Wsola *v);
 
-static inline void wsolaInit(Wsola *v, double sampleRate)
+// Returns false on allocation failure; on failure the struct is left zeroed
+// (don't call wsolaFree after a failed init).
+static inline bool wsolaInit(Wsola *v, double sampleRate, int nch)
 {
     v->sampleRate = sampleRate;
+    v->nch        = nch;
     v->L       = (int) (WSOLA_OVERLAP_MS  * sampleRate / 1000.0);
     v->NMax    = (int) (WSOLA_SEQ_MS_SLOW * sampleRate / 1000.0);
     v->HsMax   = v->NMax - v->L;
@@ -140,15 +165,30 @@ static inline void wsolaInit(Wsola *v, double sampleRate)
     const int L = v->L;
     v->rampUp   = (float *) malloc(sizeof(float) * L);
     v->rampDown = (float *) malloc(sizeof(float) * L);
-    v->tail     = (float *) calloc(L, sizeof(float));
-    v->tmpl     = (float *) calloc(L, sizeof(float));
-    v->gGrain   = (float *) malloc(sizeof(float) * v->NMax);
-    v->gSearch  = (float *) malloc(sizeof(float) * (2 * v->seekMax + L));
-    v->pending  = (float *) malloc(sizeof(float) * v->HsMax);
+    v->ch       = (WsolaChannel *) calloc(nch, sizeof(WsolaChannel));
+    if (!v->rampUp || !v->rampDown || !v->ch) {
+        free(v->rampUp); v->rampUp = nullptr;
+        free(v->rampDown); v->rampDown = nullptr;
+        free(v->ch); v->ch = nullptr;
+        return false;
+    }
+
+    for (int c = 0; c < nch; c++) {
+        WsolaChannel *ch = &v->ch[c];
+        ch->tail    = (float *) calloc(L, sizeof(float));
+        ch->tmpl    = (float *) calloc(L, sizeof(float));
+        ch->gGrain  = (float *) malloc(sizeof(float) * v->NMax);
+        ch->gSearch = (float *) malloc(sizeof(float) * (2 * v->seekMax + L));
+        ch->pending = (float *) malloc(sizeof(float) * v->HsMax);
+        if (!ch->tail || !ch->tmpl || !ch->gGrain || !ch->gSearch || !ch->pending) {
+            wsolaFree(v);
+            return false;
+        }
+    }
 
     for (int i = 0; i < L; i++) {
-        v->rampUp[i]   = (float) i / (float) L;      // 0 .. (L-1)/L
-        v->rampDown[i] = 1.0f - v->rampUp[i];        // 1 .. 1/L
+        v->rampUp[i]   = (float) i / (float) L;
+        v->rampDown[i] = 1.0f - v->rampUp[i];
     }
 
     v->anaPos = 0.0;
@@ -156,14 +196,22 @@ static inline void wsolaInit(Wsola *v, double sampleRate)
     v->first = true;
     v->pendingLen = 0;
     v->pendingRead = 0;
+    return true;
 }
 
 static inline void wsolaFree(Wsola *v)
 {
-    free(v->rampUp);  free(v->rampDown); free(v->tail);   free(v->tmpl);
-    free(v->gGrain);  free(v->gSearch);  free(v->pending);
-    v->rampUp = v->rampDown = v->tail = v->tmpl = NULL;
-    v->gGrain = v->gSearch = v->pending = NULL;
+    free(v->rampUp); free(v->rampDown);
+    if (v->ch) {
+        for (int c = 0; c < v->nch; c++) {
+            WsolaChannel *ch = &v->ch[c];
+            free(ch->tail); free(ch->tmpl); free(ch->gGrain);
+            free(ch->gSearch); free(ch->pending);
+        }
+        free(v->ch);
+    }
+    v->rampUp = v->rampDown = nullptr;
+    v->ch = nullptr;
 }
 
 // Re-seed the read cursor to loop position P. Because the engage grain is
@@ -175,7 +223,8 @@ static inline void wsolaReseed(Wsola *v, double P)
 {
     v->anaPos = P;
     v->first = true;
-    memset(v->tail, 0, sizeof(float) * v->L);
+    for (int c = 0; c < v->nch; c++)
+        memset(v->ch[c].tail, 0, sizeof(float) * v->L);
     v->pendingLen = 0;
     v->pendingRead = 0;
 }
@@ -230,21 +279,28 @@ static inline int wsolaSeek(const Wsola *v, double s)
     return sk;
 }
 
-// Normalized cross-correlation score of the L-sample candidate at gSearch
-// offset `o` against the template. Single pass, two accumulators (corr and
-// candidate energy), touching memory once. Returned score orders the same
-// as corr/sqrt(norm) but is sqrt-free; the template norm is constant across
-// candidates so it drops out of the argmax. Unit-stride -> NEON FMA.
-static inline double wsolaNcc(const float *cand, const float *tmpl, int L)
+// Summed normalized cross-correlation: corr and norm accumulate across ALL
+// channels, so a momentarily-silent channel can't drag the search off (the
+// other channel's energy still contributes). Score is corr*|corr|/norm
+// (SoundTouch's sqrt-free NCC approximation -- same argmax on periodic
+// content, slight low-energy bias vs true NCC). nch=1 collapses to the
+// single-channel formula: one term in each accumulator.
+static inline double wsolaNcc(const Wsola *v, int seek, int o)
 {
+    const int L = v->L;
     float corr = 0.0f, norm = 0.0f;
-    for (int i = 0; i < L; i++) {
-        corr += cand[i] * tmpl[i];
-        norm += cand[i] * cand[i];
+    for (int c = 0; c < v->nch; c++) {
+        const WsolaChannel *ch = &v->ch[c];
+        const float *cand = ch->gSearch + seek + o;
+        const float *tmpl = ch->tmpl;
+        for (int i = 0; i < L; i++) {
+            corr += cand[i] * tmpl[i];
+            norm += cand[i] * cand[i];
+        }
     }
     if (norm < 1e-12f) return -1e30;
     double c = corr;
-    return c * fabs(c) / (double) norm;   // == sign(corr) * corr^2 / norm
+    return c * fabs(c) / (double) norm;
 }
 
 // Quick-seek: coarse pass by WSOLA_QUICKSEEK_STEP over [-seek, +seek], then a
@@ -253,19 +309,17 @@ static inline double wsolaNcc(const float *cand, const float *tmpl, int L)
 // over the true peak. Returns the best candidate offset in [-seek, +seek].
 static inline int wsolaSearch(const Wsola *v, int seek)
 {
-    const int L = v->L;
-    const float *base = v->gSearch + seek;   // gSearch offset for candidate 0
     int bestO = 0; double bestS = -1e30;
 
     for (int o = -seek; o <= seek; o += WSOLA_QUICKSEEK_STEP) {
-        double s = wsolaNcc(base + o, v->tmpl, L);
+        double s = wsolaNcc(v, seek, o);
         if (s > bestS) { bestS = s; bestO = o; }
     }
     int lo = bestO - WSOLA_QUICKSEEK_STEP, hi = bestO + WSOLA_QUICKSEEK_STEP;
     if (lo < -seek) lo = -seek;
     if (hi >  seek) hi =  seek;
     for (int o = lo; o <= hi; o++) {
-        double s = wsolaNcc(base + o, v->tmpl, L);
+        double s = wsolaNcc(v, seek, o);
         if (s > bestS) { bestS = s; bestO = o; }
     }
     return bestO;
@@ -273,67 +327,74 @@ static inline int wsolaSearch(const Wsola *v, int seek)
 
 // Produce one grain: choose the read position (aligned by the search except
 // on the engage grain), overlap-add its front onto the carried tail, copy
-// its verbatim middle, and carry the new tail + template. Emits Hs output
-// samples into pending and advances anaPos by Ha = s * Hs.
-static inline void wsolaSynth(Wsola *v, const float *loop, long len, double s)
+// its verbatim middle, and carry the new tail + template -- for EVERY
+// channel, at the SAME chosen offset. Emits Hs output samples per channel
+// into pending and advances anaPos by Ha = s * Hs (once, shared).
+static inline void wsolaSynth(Wsola *v, const float *const *loops, long len, double s)
 {
     const int L = v->L;
     const int Hs = wsolaHs(v, s, len);
     const int N  = Hs + L;
-    const bool engage = v->first;   // engage grain: no search, verbatim front
+    const bool engage = v->first;
     long chosen;
 
     if (engage) {
-        chosen = lround(v->anaPos);              // nothing to align to yet
+        chosen = lround(v->anaPos);
         v->first = false;
     } else {
         int seek = wsolaSeek(v, s);
         long base = lround(v->anaPos);
-        wsolaGather(loop, len, base - seek, 2 * seek + L, v->gSearch);
+        // gather every channel's search region -- the NCC sums across all
+        for (int c = 0; c < v->nch; c++)
+            wsolaGather(loops[c], len, base - seek, 2 * seek + L, v->ch[c].gSearch);
         chosen = base + wsolaSearch(v, seek);
     }
 
-    wsolaGather(loop, len, chosen, N, v->gGrain);
+    for (int c = 0; c < v->nch; c++) {
+        WsolaChannel *ch = &v->ch[c];
+        wsolaGather(loops[c], len, chosen, N, ch->gGrain);
 
-    // emit Hs samples. Engage grain: emit [0,Hs) verbatim so out[0] == loop[P]
-    // (continuous with the raw audience). Otherwise front [0,L) crossfades the
-    // seam (tail already holds prev*rampDown), middle [L,Hs) is verbatim.
-    if (engage) {
-        for (int i = 0; i < Hs; i++) v->pending[i] = v->gGrain[i];
-    } else {
-        for (int i = 0; i < L; i++)
-            v->pending[i] = v->tail[i] + v->gGrain[i] * v->rampUp[i];
-        for (int i = L; i < Hs; i++)
-            v->pending[i] = v->gGrain[i];
+        if (engage) {
+            for (int i = 0; i < Hs; i++) ch->pending[i] = ch->gGrain[i];
+        } else {
+            for (int i = 0; i < L; i++)
+                ch->pending[i] = ch->tail[i] + ch->gGrain[i] * v->rampUp[i];
+            for (int i = L; i < Hs; i++)
+                ch->pending[i] = ch->gGrain[i];
+        }
+
+        for (int k = 0; k < L; k++) {
+            float x = ch->gGrain[Hs + k];
+            ch->tmpl[k] = x;
+            ch->tail[k] = x * v->rampDown[k];
+        }
     }
+
     v->pendingLen = Hs;
     v->pendingRead = 0;
-
-    // carry: new tail = grain's last L windowed down; template = same span raw
-    for (int k = 0; k < L; k++) {
-        float x = v->gGrain[Hs + k];
-        v->tmpl[k] = x;
-        v->tail[k] = x * v->rampDown[k];
-    }
-
     v->prevChosen = chosen;
-    v->anaPos += s * (double) Hs;                // Ha = s * Hs
+    v->anaPos += s * (double) Hs;
 }
 
-// Fill n output samples at playback rate s, pulling grains as needed. s is
-// the ratio transport_bpm / recorded_bpm; changing it between calls is a
-// smooth rate change (it just sets the next grain's Ha). Allocation-free.
-static inline void wsolaProcess(Wsola *v, const float *loop, long len,
-                                double s, float *out, int n)
+// Fill n output samples per channel at playback rate s, pulling grains as
+// needed. s is the ratio transport_bpm / recorded_bpm; changing it between
+// calls is a smooth rate change (it just sets the next grain's Ha).
+// Allocation-free. loops[c] and outs[c] are per-channel float arrays; the
+// caller owns them (typically outs is a stack scratch the engine mixes from).
+static inline void wsolaProcess(Wsola *v, const float *const *loops, long len,
+                                double s, float *const *outs, int n)
 {
     int w = 0;
     while (w < n) {
         if (v->pendingRead >= v->pendingLen)
-            wsolaSynth(v, loop, len, s);
+            wsolaSynth(v, loops, len, s);
         int avail = v->pendingLen - v->pendingRead;
         int take = n - w;
         if (take > avail) take = avail;
-        memcpy(out + w, v->pending + v->pendingRead, (size_t) take * sizeof(float));
+        for (int c = 0; c < v->nch; c++) {
+            memcpy(outs[c] + w, v->ch[c].pending + v->pendingRead,
+                   (size_t) take * sizeof(float));
+        }
         v->pendingRead += take;
         w += take;
     }

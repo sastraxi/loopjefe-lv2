@@ -69,8 +69,10 @@ LV2_Handle LoopJefePlugin::instantiate(const LV2_Descriptor* descriptor, double 
     LoopJefe * pLS;
     // important note: using calloc to zero all data
     pLS = (LoopJefe *) calloc(1, sizeof(LoopJefe));
-    if (pLS == NULL)
+    if (pLS == NULL) {
+      delete plugin;
       return NULL;
+    }
     plugin->pLS = pLS;
 
    pLS->fSampleRate = (LADSPA_Data)SampleRate;
@@ -89,9 +91,8 @@ LV2_Handle LoopJefePlugin::instantiate(const LV2_Descriptor* descriptor, double 
    for (unsigned c = 0; c < NUM_CHANNELS; c++) {
        pLS->pSampleBuf[c] = (char*)calloc(pLS->lBufferSize, 1);
        if (pLS->pSampleBuf[c] == NULL) {
-           for (unsigned d = 0; d < c; d++)
-               free(pLS->pSampleBuf[d]);
-           free(pLS);
+           delete plugin;   // dtor frees pLS->pSampleBuf[*] (calloc'd, so
+                            // unallocated entries are NULL) and pLS
            return NULL;
        }
    }
@@ -104,11 +105,11 @@ LV2_Handle LoopJefePlugin::instantiate(const LV2_Descriptor* descriptor, double 
     pLS->state = STATE_EMPTY;
 
     //init lowpass
-     plugin->z1 = 0.0;
-     double frequency = 20.0 / SampleRate;
-     plugin->b1 = exp(-2.0 * M_PI * frequency);
-     plugin->a0 = 1.0 - plugin->b1;
-     plugin->dryVolumeCoef = 0.0;
+    plugin->z1 = 0.0;
+    double frequency = 20.0 / SampleRate;
+    plugin->b1 = exp(-2.0 * M_PI * frequency);
+    plugin->a0 = 1.0 - plugin->b1;
+    plugin->dryVolumeCoef = 0.0;
 
     plugin->undoSet = false;
     plugin->redoSet = false;
@@ -116,6 +117,17 @@ LV2_Handle LoopJefePlugin::instantiate(const LV2_Descriptor* descriptor, double 
     plugin->advanceSet = false;
     plugin->initNewLoop = false;
     plugin->pending_close_length = 0;
+
+    // WSOLA per-channel scratch (heap, one alloc per channel; wsScratch[] is
+    // nulled in the ctor, so a failed alloc here is freed safely by the dtor).
+    plugin->wsScratchCap = 8192;
+    for (unsigned c = 0; c < NUM_CHANNELS; c++) {
+        plugin->wsScratch[c] = (float *) malloc(sizeof(float) * plugin->wsScratchCap);
+        if (!plugin->wsScratch[c]) {
+            delete plugin;   // frees wsScratch[*], pLS->pSampleBuf[*], pLS
+            return NULL;
+        }
+    }
 
     return (LV2_Handle)plugin;
 }

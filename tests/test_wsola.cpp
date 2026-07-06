@@ -180,15 +180,17 @@ static void naiveOlaReference(const std::vector<float> &loop, double s,
     }
 }
 
-// A wrapper that owns a Wsola and a loop -- keeps the per-test bodies
-// short and uniform. reseed(P) + process(s, n) returns the output.
+// A wrapper that owns a Wsola (mono, nch=1) and a loop -- keeps the
+// per-test bodies short and uniform. reseed(P) + process(s, n) returns
+// the output. nch=1 collapses to the single-channel formula, so the
+// regression-guard constants seeded from the per-channel voice stay valid.
 struct Voice {
     Wsola v;
     std::vector<float> loop;
     explicit Voice(long loopLen, double sr = SR) : loop(loopLen)
     {
         memset(&v, 0, sizeof(v));
-        wsolaInit(&v, sr);
+        wsolaInit(&v, sr, 1);
     }
     ~Voice() { wsolaFree(&v); }
     void setLoop(const std::vector<float> &l) { loop = l; }
@@ -196,17 +198,20 @@ struct Voice {
     std::vector<float> process(double s, long n)
     {
         std::vector<float> out(n);
-        wsolaProcess(&v, loop.data(), (long)loop.size(), s, out.data(), (int)n);
+        const float *loops[1] = { loop.data() };
+        float *outs[1] = { out.data() };
+        wsolaProcess(&v, loops, (long)loop.size(), s, outs, (int)n);
         return out;
     }
     // process in fixed-size blocks (the integration shape)
     std::vector<float> processBlocks(double s, long n, int block)
     {
         std::vector<float> out(n);
+        const float *loops[1] = { loop.data() };
         for (long w = 0; w < n; w += block) {
             long take = std::min((long)block, n - w);
-            wsolaProcess(&v, loop.data(), (long)loop.size(), s,
-                         out.data() + w, (int)take);
+            float *outs[1] = { out.data() + w };
+            wsolaProcess(&v, loops, (long)loop.size(), s, outs, (int)take);
         }
         return out;
     }
@@ -327,12 +332,13 @@ static void test_rate_change_smoothness()
         Voice v(len); v.setLoop(loop); v.reseed(0.0);
         long n = (long)(6.0 * SR);
         std::vector<float> out(n);
+        const float *loops[1] = { loop.data() };
         for (long i = 0; i < n; i += 256) {
             long take = std::min((long)256, n - i);
             double frac = (double)i / n;
             double s = 1.0 + 0.6 * frac;
-            wsolaProcess(&v.v, loop.data(), (long)loop.size(), s,
-                         out.data() + i, (int)take);
+            float *outs[1] = { out.data() + i };
+            wsolaProcess(&v.v, loops, (long)loop.size(), s, outs, (int)take);
         }
         CHECK(maxAdjDelta(out.data(), n) <= 0.004);   // REGRESSION GUARD
     }
@@ -341,10 +347,11 @@ static void test_rate_change_smoothness()
     {
         Voice v(len); v.setLoop(loop); v.reseed(0.0);
         std::vector<float> out(4000);
-        wsolaProcess(&v.v, loop.data(), (long)loop.size(), 1.0,
-                     out.data(), 2000);
-        wsolaProcess(&v.v, loop.data(), (long)loop.size(), 1.3,
-                     out.data() + 2000, 2000);
+        const float *loops[1] = { loop.data() };
+        float *o1[1] = { out.data() };
+        float *o2[1] = { out.data() + 2000 };
+        wsolaProcess(&v.v, loops, (long)loop.size(), 1.0, o1, 2000);
+        wsolaProcess(&v.v, loops, (long)loop.size(), 1.3, o2, 2000);
         CHECK(fabs((double)out[2000] - out[1999]) <= 0.003);  // REGRESSION GUARD
         CHECK(maxAdjDelta(out.data(), 4000) <= 0.004);
     }
@@ -427,14 +434,15 @@ static void test_determinism()
         Voice v(len); v.setLoop(loop); v.reseed(303.0);
         long n = (long)(3.0 * SR);
         std::vector<float> out(n);
+        const float *loops[1] = { loop.data() };
         long w = 0; int bi = 0;
         while (w < n) {
             int block = blocks[bi++ % 5];
             long take = std::min((long)block, n - w);
             double frac = (double)w / n;
             double s = 1.0 + 0.3 * frac;
-            wsolaProcess(&v.v, loop.data(), (long)loop.size(), s,
-                         out.data() + w, (int)take);
+            float *outs[1] = { out.data() + w };
+            wsolaProcess(&v.v, loops, (long)loop.size(), s, outs, (int)take);
             w += take;
         }
         return out;
@@ -521,6 +529,41 @@ static void test_alignment_beats_naive()
     CHECK(wCount < 0.3 * nCount);         // REGRESSION GUARD: wsola far fewer
 }
 
+// #13. Multichannel summed search, silent LEADER channel. ch0 is pure
+// silence, ch1 is the harmonic loop. This is the case a channel-0-leader
+// search gets wrong: correlating the silent ch0 hits norm < 1e-12, the NCC
+// returns -1e30 for every candidate, and wsolaSearch falls back to its
+// initial offset 0 -- so ch1's grains land unaligned and glitch exactly
+// like naiveOlaReference. The summed NCC (corr/norm across BOTH channels)
+// aligns ch1 because ch1's energy still drives the search. We assert ch1's
+// cross-grain continuity matches the single-channel bound (#5); a leader
+// search would blow past it. A direct guard for the summed-search fix,
+// deterministic (no engine/wet-ramp noise).
+static void test_multichannel_silent_leader()
+{
+    long len = 24000;
+    auto content = makeHarmonicLoop(len);
+    std::vector<float> silent(len, 0.0f);
+
+    Wsola v; memset(&v, 0, sizeof(v));
+    CHECK(wsolaInit(&v, SR, 2));
+    wsolaReseed(&v, 0.0);
+
+    double s = 1.25;
+    long n = (long)(5.0 * len / s);
+    std::vector<float> o0(n), o1(n);
+    const float *loops[2] = { silent.data(), content.data() };
+    float *outs[2] = { o0.data(), o1.data() };
+    wsolaProcess(&v, loops, len, s, outs, (int)n);
+
+    for (long i = 0; i < n; i++) CHECK(o0[i] == 0.0f);   // silent leader stays silent
+    // ch1 aligned despite the silent leader -- same bound as #5 cross-wrap.
+    // (Measured identical to the single-channel case; a stuck-at-0 leader
+    // search glitches like the naive reference, ~0.3+.)
+    CHECK(maxAdjDelta(o1.data(), n) <= 0.003);           // REGRESSION GUARD
+    wsolaFree(&v);
+}
+
 int main()
 {
     test_pitch_preservation();
@@ -535,5 +578,6 @@ int main()
     test_determinism();
     test_silence_nonfinite();
     test_alignment_beats_naive();
+    test_multichannel_silent_leader();
     return test_summary("test_wsola");
 }

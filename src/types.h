@@ -144,13 +144,13 @@ typedef struct _LoopChunk {
     double anchor_beat;
     double loop_beats;
 
-    // Heap-allocated WSOLA voice, one per audio channel. Created lazily on
-    // the first block that actually needs to stretch this chunk. Kept alive
-    // across undo/redo (so redo restores a warmed voice); only freed on the
-    // destroy paths (see clearLoopChunks). NULL = not yet created. Can't be
-    // embedded inline in LoopChunk -- that would break the bump-allocator
-    // arithmetic.
-    Wsola * pVoice[NUM_CHANNELS];
+    // Heap-allocated WSOLA voice for this chunk, owning all channels. Created
+    // lazily on the first block that actually needs to stretch this chunk.
+    // Kept alive across undo/redo (so redo restores a warmed voice); only
+    // freed on the destroy paths (see clearLoopChunks). NULL = not yet
+    // created. Can't be embedded inline in LoopChunk -- that would break the
+    // bump-allocator arithmetic.
+    Wsola * pVoice;
 
     // the loop where we should be frontfilled and backfilled from
     struct _LoopChunk* srcloop;
@@ -210,8 +210,16 @@ typedef struct {
 class LoopJefePlugin
 {
 public:
-    LoopJefePlugin() {}
+    LoopJefePlugin() {
+        // Null the members the destructor frees, so `delete plugin` is safe
+        // from any early-return in instantiate (before pLS/wsScratch are set).
+        pLS = NULL;
+        for (unsigned c = 0; c < NUM_CHANNELS; c++)
+            wsScratch[c] = NULL;
+    }
     ~LoopJefePlugin() {
+        for (unsigned c = 0; c < NUM_CHANNELS; c++)
+            free(wsScratch[c]);
         if (pLS) {
             for (unsigned c = 0; c < NUM_CHANNELS; c++)
                 free(pLS->pSampleBuf[c]);
@@ -244,6 +252,14 @@ public:
     const LV2_Atom_Sequence *time_info;
     LoopJefe *pLS;
     float dryVolumeCoef;
+
+    // WSOLA per-channel output scratch (heap, allocated once at instantiate).
+    // The run() STATE_PLAY path renders a whole block through the voice into
+    // this scratch, then indexes it in the frame loop -- one wsolaProcess
+    // call per block instead of per sample. Sized to the LV2 max block
+    // ceiling (8192); a larger host block falls back to raw interp.
+    float *wsScratch[NUM_CHANNELS];
+    unsigned wsScratchCap;
     int params_state[PLUGIN_CONTROL_PORT_COUNT];
     bool undoSet;
     bool redoSet;

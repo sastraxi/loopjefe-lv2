@@ -312,7 +312,7 @@ static void test_ratio_change_keeps_same_voice_instance()
     h.out.assign(BLK, 0.0f);
     h.run(BLK);
 
-    Wsola *first = loop->pVoice[0];
+    Wsola *first = loop->pVoice;
     CHECK(first != NULL);
 
     push_at(h, (double) BLK, /*bpm=*/160.0);
@@ -320,7 +320,7 @@ static void test_ratio_change_keeps_same_voice_instance()
     h.out.assign(BLK, 0.0f);
     h.run(BLK);
 
-    CHECK(loop->pVoice[0] == first);
+    CHECK(loop->pVoice == first);
 }
 
 // Rapid, wide bpm swings (near the floor, far above it, back and forth)

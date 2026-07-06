@@ -373,14 +373,52 @@ void LoopJefePlugin::run(LV2_Handle instance, uint32_t SampleCount)
                             if (fabs(ratio - 1.0) > STRETCH_RATIO_EPS) {
                                 useWsola = true;
                                 // Lazily allocate + init the voice on first engage.
-                                for (unsigned c = 0; c < NUM_CHANNELS; c++) {
-                                    if (!loop->pVoice[c]) {
-                                        loop->pVoice[c] = (Wsola *) malloc(sizeof(Wsola));
-                                        wsolaInit(loop->pVoice[c], pLS->fSampleRate);
-                                        wsolaReseed(loop->pVoice[c], loop->dCurrPos);
+                                // One voice owns all channels (shared search offset
+                                // keeps the stereo image coherent). Bail to the raw
+                                // path if allocation fails.
+                                if (!loop->pVoice) {
+                                    Wsola *v = (Wsola *) malloc(sizeof(Wsola));
+                                    if (v && wsolaInit(v, pLS->fSampleRate, NUM_CHANNELS)) {
+                                        wsolaReseed(v, loop->dCurrPos);
+                                        loop->pVoice = v;
+                                    } else {
+                                        free(v);
+                                        useWsola = false;
                                     }
                                 }
                             }
+                        }
+
+                        // When WSOLA is engaged, render the whole block into
+                        // the per-channel heap scratch (allocated once at
+                        // instantiate), then index it in the frame loop below.
+                        // One wsolaProcess call per block (not per sample) --
+                        // the grain scheduling is internal. A host block
+                        // larger than wsScratchCap falls back to raw interp.
+                        float *wsOut[NUM_CHANNELS];
+                        for (unsigned c = 0; c < NUM_CHANNELS; c++)
+                            wsOut[c] = plugin->wsScratch[c];
+                        const bool wsolaFilled = useWsola && loop->pVoice
+                            && SampleCount <= plugin->wsScratchCap;
+                        if (wsolaFilled) {
+                            // nudge anaPos toward dCurrPos; reseed if the gap
+                            // exceeds the active search radius (not seekMax: at
+                            // fast rates wsolaSeek is ~15 ms vs seekMax ~25 ms,
+                            // so a gap in that dead-band neither reseeds nor is
+                            // reachable by the search).
+                            Wsola *v = loop->pVoice;
+                            double gap = loop->dCurrPos - v->anaPos;
+                            int seek = wsolaSeek(v, stretchRatio);
+                            if (fabs(gap) > (double) seek)
+                                wsolaReseed(v, loop->dCurrPos);
+                            else if (fabs(gap) > 0.5)
+                                v->anaPos += gap * 0.1;
+
+                            const float *loops[NUM_CHANNELS];
+                            for (unsigned c = 0; c < NUM_CHANNELS; c++)
+                                loops[c] = loop->pLoopStart[c];
+                            wsolaProcess(v, loops, (long) loop->lLoopLength,
+                                         stretchRatio, wsOut, SampleCount);
                         }
 
                         for (;lSampleIndex < SampleCount;
@@ -420,32 +458,12 @@ void LoopJefePlugin::run(LV2_Handle instance, uint32_t SampleCount)
                             // fill loops if necessary (all channels, once)
                             fillLoops(pLS, loop, lCurrPos);
 
-                            // WSOLA: nudge anaPos toward dCurrPos; reseed if
-                            // the gap exceeds the search radius.
-                            if (useWsola) {
-                                for (unsigned c = 0; c < NUM_CHANNELS; c++) {
-                                    Wsola *v = loop->pVoice[c];
-                                    if (v) {
-                                        double gap = loop->dCurrPos - v->anaPos;
-                                        if (fabs(gap) > (double) v->seekMax) {
-                                            wsolaReseed(v, loop->dCurrPos);
-                                        } else if (fabs(gap) > 0.5) {
-                                            v->anaPos += gap * 0.1;
-                                        }
-                                    }
-                                }
-                            }
-
                             for (unsigned c = 0; c < NUM_CHANNELS; c++) {
                                 fInputSample = pfInputs[c][lSampleIndex];
 
                                 LADSPA_Data fInterpSample;
-                                if (useWsola && loop->pVoice[c]) {
-                                    // Process one sample at a time through WSOLA
-                                    // (wsolaProcess handles grain scheduling internally).
-                                    wsolaProcess(loop->pVoice[c],
-                                        loop->pLoopStart[c], (long) loop->lLoopLength,
-                                        stretchRatio, &fInterpSample, 1);
+                                if (wsolaFilled) {
+                                    fInterpSample = wsOut[c][lSampleIndex];
                                 } else {
                                     double dFracPos = fmod(loop->dCurrPos, loop->lLoopLength) - lCurrPos;
                                     unsigned long lNextPos = (lCurrPos + 1 >= loop->lLoopLength) ? 0 : lCurrPos + 1;

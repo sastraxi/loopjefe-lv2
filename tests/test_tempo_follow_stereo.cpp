@@ -1,5 +1,6 @@
 /* test_tempo_follow_stereo.cpp -- the stereo facet of the WSOLA stretch
-   path. Two independent single-channel voices per chunk, sharing one cursor.
+   path. One multi-channel voice per chunk (shared search offset, per-channel
+   OLA carry), proving the two channels stay independent.
 
    GPL, same as the rest of the repo. */
 
@@ -63,10 +64,10 @@ static void silence_inputs(PluginHost &h)
 }
 
 // The core stereo-separation regression: at a non-unity ratio (forcing the
-// render cache into play), a channel recorded as pure silence must stay
-// silent in the stretched output -- proving the cache reads its own
-// channel's buffer, not a mix of both (which is what the old single-buffer
-// implementation did, treating the interleaved L/R stream as mono).
+// WSOLA voice into play), a channel recorded as pure silence must stay
+// silent in the stretched output -- proving the voice reads each channel's
+// own buffer, not a mix of both. The shared search offset is computed from
+// channel 0 only, so a silent R never drags the search off.
 static void test_stretch_keeps_channels_independent()
 {
     PluginHost h(SR, /*max_block=*/BLK);
@@ -99,9 +100,7 @@ static void test_stretch_keeps_channels_independent()
 
     CHECK(left_ever_nonzero);        // L had real content -- stretch is active
     CHECK(!right_ever_nonzero);      // R was recorded silent -- must stay silent
-    CHECK(loop->pVoice[0] != NULL);
-    CHECK(loop->pVoice[1] != NULL);
-    CHECK(loop->pVoice[0] != loop->pVoice[1]);   // independent instances
+    CHECK(loop->pVoice != NULL);     // one voice, both channels
 }
 
 // Unity ratio still bypasses to the raw interleaved buffer for both
@@ -120,7 +119,7 @@ static void test_unity_ratio_bypasses_both_channels()
     LoopChunk *loop = h.plugin()->pLS->headLoopChunk;
     CHECK(loop != NULL);
     if (!loop) return;
-    CHECK(loop->pVoice[0] == NULL);   // never allocated -- bypass path
+    CHECK(loop->pVoice == NULL);   // never allocated -- bypass path
 }
 
 // Record DISTINCT tones on L and R, then stretch. The silence oracle above
@@ -173,7 +172,64 @@ static void test_stretch_keeps_distinct_channels_distinct()
     // The two channels are genuinely different signals -- a shared-buffer bug
     // would make them identical (divergence ~ 0).
     CHECK(divergence > 1.0);
-    CHECK(loop->pVoice[0] != loop->pVoice[1]);
+    // One voice, but per-channel OLA carry keeps the signals distinct.
+    CHECK(loop->pVoice != NULL);
+}
+
+// Record a real tone on R, silence on L -- the channel-0-silent case. With
+// a channel-0-leader search this would hit norm < 1e-12, the argmax sticks
+// at offset 0, and R's content gets misaligned. The summed NCC (corr/norm
+// across both channels) keeps the search working because R's energy
+// still contributes even though L is silent.
+static void record_one_bar_tone_right_only(PluginHost &h, double bpm = BPM)
+{
+    push_at(h, 0.0, bpm);
+    std::fill(h.in.begin(), h.in.end(), 0.0f);
+    fill_sine(h.in_1, 0.0, /*freq_hz=*/220.0);
+    h.tap(BLK);
+    for (int k = 1; k < 96; k++) {
+        push_at(h, (double) k * BLK, bpm);
+        std::fill(h.in.begin(), h.in.end(), 0.0f);
+        fill_sine(h.in_1, (double) k * BLK, /*freq_hz=*/220.0);
+        h.run(BLK);
+    }
+}
+
+// Channel-0-silent, integration smoke test: drive a silent L / tone-R loop
+// through the whole engine at a non-unity ratio and confirm L stays silent
+// while R survives the search+stretch. Note this only proves R isn't
+// silenced -- a channel-0-leader bug still passes R through (unaligned but
+// audible), so the decisive alignment guard for the summed NCC lives in the
+// unit suite (test_wsola.cpp test_multichannel_silent_leader), where the
+// output is free of the engine's wet-ramp / wrap-reseed noise.
+static void test_stretch_with_channel_0_silent()
+{
+    PluginHost h(SR, /*max_block=*/BLK);
+    record_one_bar_tone_right_only(h, /*bpm=*/120.0);
+    close_one_bar(h, /*bpm=*/120.0);
+    mute_dry(h);
+
+    const double new_bpm = 140.0;
+    LoopChunk *loop = h.plugin()->pLS->headLoopChunk;
+    CHECK(loop != NULL);
+    if (!loop) return;
+
+    const double ratio = new_bpm / BPM;
+    const int total_blocks = (int) ceil(loop->lLoopLength / ratio / BLK) + 4;
+
+    double left_energy = 0.0, right_energy = 0.0;
+    for (int k = 0; k < total_blocks; k++) {
+        push_at(h, (double) k * BLK, new_bpm);
+        silence_inputs(h);
+        h.run(BLK);
+        for (size_t i = 0; i < h.out.size(); i++) {
+            left_energy  += (double) h.out[i]   * h.out[i];
+            right_energy += (double) h.out_1[i] * h.out_1[i];
+        }
+    }
+
+    CHECK(left_energy  < 1e-6);    // L was recorded silent -- stays silent
+    CHECK(right_energy > 1.0);    // R carried through the search+stretch
 }
 
 int main()
@@ -181,5 +237,6 @@ int main()
     test_stretch_keeps_channels_independent();
     test_unity_ratio_bypasses_both_channels();
     test_stretch_keeps_distinct_channels_distinct();
+    test_stretch_with_channel_0_silent();
     return test_summary("test_tempo_follow_stereo");
 }
