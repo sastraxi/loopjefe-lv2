@@ -1,0 +1,3 @@
+# built binaries (no extension, so not covered by root .gitignore)
+rb_latency_probe
+rb_stream_proto

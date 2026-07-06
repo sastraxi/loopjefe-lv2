@@ -40,8 +40,21 @@ endif
 
 # Tempo-follow stretch (see docs/tempo-follow-plan.md). Rubber Band R3
 # real-time, baked in. GPL — whole stack is GPL.
+#
+# On macOS we static-link the .a archives so the bundled .dylib has zero
+# external deps — MOD Desktop is a signed app and strips DYLD_* env vars
+# on launch, so homebrew's @rpath/librubberband.3.dylib wouldn't resolve
+# when the host dlopens us, and the plugin would silently disappear from
+# the browser. Static linking (all GPL) avoids that. Linux/MOD-device
+# keeps dynamic -lrubberband (the .so finds it via ld.so).
 CXXFLAGS += $(shell pkg-config --cflags rubberband)
+ifeq ($(MACOS),true)
+LDFLAGS += /opt/homebrew/opt/rubberband/lib/librubberband.a \
+           /opt/homebrew/opt/libsamplerate/lib/libsamplerate.a \
+           -framework Accelerate
+else
 LDFLAGS += $(shell pkg-config --libs rubberband)
+endif
 
 # remove command
 RM = rm -f
