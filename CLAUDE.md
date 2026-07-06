@@ -61,6 +61,8 @@ renaming the directory is the whole rename.
   how the host works and how to add a test. **Run after any change to
   `src/*.h`** (the umbrella includes all of them; the test Makefile tracks
   `shared.h` so any domain header change forces a rebuild).
+- `cd experiments && make run` — throwaway probes that link `librubberband`
+  directly (kept out of `make check`); back `docs/tempo-follow-streaming.md`.
 
 ## State machine — the contract (don't regress these)
 
