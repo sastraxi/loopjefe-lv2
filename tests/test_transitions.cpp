@@ -11,30 +11,19 @@
 #include "../loopjefe/src/loopjefe.cpp"   // brings in ports, class, connect_port
 #include "lv2_test_host.h"
 
-static const char *surf_name(int s)
-{
-    switch (s) {
-    case SURFACE_EMPTY:     return "EMPTY";
-    case SURFACE_RECORDING: return "RECORDING";
-    case SURFACE_OVERDUB:   return "OVERDUB";
-    case SURFACE_PLAYBACK:  return "PLAYBACK";
-    case SURFACE_STOPPED:   return "STOPPED";
-    default:                return "?";
-    }
-}
-
 static const char *eng_name(int s)
 {
     switch (s) {
-    case STATE_OFF:            return "OFF";
-    case STATE_RECORD_ARM:    return "RECORD_ARM";
-    case STATE_RECORD:        return "RECORD";
-    case STATE_RECORD_CLOSE:  return "RECORD_CLOSE";
-    case STATE_PLAY:          return "PLAY";
-    case STATE_OVERDUB:       return "OVERDUB";
-    case STATE_OVERDUB_ARM:   return "OVERDUB_ARM";
-    case STATE_OVERDUB_CLOSE: return "OVERDUB_CLOSE";
-    default:                  return "?";
+    case STATE_EMPTY:            return "EMPTY";
+    case STATE_RECORD_ARM:      return "RECORD_ARM";
+    case STATE_RECORD:          return "RECORD";
+    case STATE_RECORD_CLOSE:    return "RECORD_CLOSE";
+    case STATE_PLAY:            return "PLAY";
+    case STATE_STOPPED:         return "STOPPED";
+    case STATE_OVERDUB_ARM:     return "OVERDUB_ARM";
+    case STATE_OVERDUB:         return "OVERDUB";
+    case STATE_OVERDUB_CLOSE:   return "OVERDUB_CLOSE";
+    default:                    return "?";
     }
 }
 
@@ -43,10 +32,10 @@ static const char *eng_name(int s)
 static void trace_cycle()
 {
     PluginHost h;
-    std::printf("[trace] free-run cycle (surface / engine):\n");
+    std::printf("[trace] free-run cycle (engine state):\n");
     auto row = [&](const char *label) {
-        std::printf("    %-22s surface=%-9s engine=%s\n",
-                    label, surf_name(h.surface()), eng_name(h.engine()));
+        std::printf("    %-22s engine=%s\n",
+                    label, eng_name(h.engine()));
     };
     row("after activate");
     h.tap();      row("tap (arm record)");
@@ -63,41 +52,32 @@ static void test_surface_cycle()
     PluginHost h;
 
     // Fresh instance sits in EMPTY.
-    CHECK_EQ(h.surface(), SURFACE_EMPTY);
+    CHECK_EQ(h.engine(), STATE_EMPTY);
 
-    // EMPTY + tap -> RECORDING. With no valid transport the arm falls back
+    // EMPTY + tap -> RECORD_ARM. With no valid transport the arm falls back
     // to free-run, and the audio loop starts recording *within the same
     // run()* -- so the engine is already RECORD, never observably
-    // TRIG_START (now STATE_RECORD_ARM). (STATE_RECORD_ARM only persists
+    // STATE_RECORD_ARM. (STATE_RECORD_ARM only persists
     // across blocks while waiting for a real downbeat; that's a
     // transport-driven test, added separately.)
-    // a real downbeat; that's a transport-driven test, added separately.)
     h.tap();
-    CHECK_EQ(h.surface(), SURFACE_RECORDING);
     CHECK_EQ(h.engine(),  STATE_RECORD);
 
     // Another idle block: still recording.
     h.run(256);
-    CHECK_EQ(h.surface(), SURFACE_RECORDING);
     CHECK_EQ(h.engine(),  STATE_RECORD);
 
-    // RECORDING + tap -> PLAYBACK, and the engine must actually STOP
-    // recording and start playing. (Previously the finalize arm set only
-    // surface_state, leaving the engine in STATE_RECORD -- it kept
-    // appending and rewrote lLoopLength every block, clobbering the
-    // bar-round (in dsp_run.h's SURFACE_RECORDING advance case).)
+    // RECORD + tap -> PLAYBACK, and the engine must actually STOP
+    // recording and start playing.
     h.tap();
-    CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
     CHECK_EQ(h.engine(),  STATE_PLAY);
 
-    // PLAYBACK + tap -> STOPPED, engine goes OFF (loop retained).
+    // PLAYBACK + tap -> STOPPED, engine goes STOPPED (loop retained).
     h.tap();
-    CHECK_EQ(h.surface(), SURFACE_STOPPED);
-    CHECK_EQ(h.engine(),  STATE_OFF);
+    CHECK_EQ(h.engine(),  STATE_STOPPED);
 
     // STOPPED + tap -> PLAYBACK, engine resumes PLAY.
     h.tap();
-    CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
     CHECK_EQ(h.engine(),  STATE_PLAY);
 }
 
@@ -110,8 +90,7 @@ static void test_reset_aborts_recording()
     CHECK_EQ(h.engine(), STATE_RECORD);
 
     h.pulse_reset();
-    CHECK_EQ(h.surface(), SURFACE_EMPTY);
-    CHECK_EQ(h.engine(),  STATE_OFF);
+    CHECK_EQ(h.engine(),  STATE_EMPTY);
     CHECK(h.reset == 0.0f);          // momentary port self-clears
 }
 
@@ -130,10 +109,9 @@ static void test_reset_from_playback_arms_overdub()
     h.run(256);     // record block 2 (loop is now 512 samples)
     h.run(256);     // block 3 (loop is now 768 samples)
     h.tap();        // finalize -> PLAYBACK (free-run, 768-sample loop)
-    CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
+    CHECK_EQ(h.engine(), STATE_PLAY);
 
     h.pulse_reset();  // arm overdub; 256-sample block < 768-sample loop, no wrap
-    CHECK_EQ(h.surface(), SURFACE_OVERDUB);
     CHECK_EQ(h.engine(),  STATE_OVERDUB_ARM);  // armed, falls through to PLAY audio
 }
 

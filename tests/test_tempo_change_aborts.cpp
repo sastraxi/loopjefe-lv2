@@ -55,8 +55,7 @@ static void test_bpm_change_while_recording_aborts()
     // measured against just shifted, so the partial take is meaningless.
     push_at(h, 140.0, 48000.0);
     h.run(BLK);
-    CHECK_EQ(h.surface(),     SURFACE_EMPTY);
-    CHECK_EQ(h.engine(),      STATE_OFF);
+    CHECK_EQ(h.engine(),      STATE_EMPTY);
     CHECK_EQ(h.loop_length(), 0);
 }
 
@@ -73,8 +72,7 @@ static void test_bpm_change_while_armed_aborts()
     // Tempo jumps before the downbeat arrives.
     h.set_transport(140.0, BPB, /*bar_beat=*/2.0, /*rolling=*/true);
     h.run(BLK);
-    CHECK_EQ(h.surface(),     SURFACE_EMPTY);
-    CHECK_EQ(h.engine(),      STATE_OFF);
+    CHECK_EQ(h.engine(),      STATE_EMPTY);
     CHECK_EQ(h.loop_length(), 0);
 }
 
@@ -93,8 +91,7 @@ static void test_bpm_change_while_close_pending_aborts()
     // computed against the old grid; the take is dropped.
     push_at(h, 140.0, 169000.0);
     h.run(BLK);
-    CHECK_EQ(h.surface(),     SURFACE_EMPTY);
-    CHECK_EQ(h.engine(),      STATE_OFF);
+    CHECK_EQ(h.engine(),      STATE_EMPTY);
     CHECK_EQ(h.loop_length(), 0);
 }
 
@@ -126,7 +123,6 @@ static void test_bpm_change_in_playback_is_noop()
     record_blocks(h, BPM, 96);                   // exactly 1 bar
     push_at(h, BPM, 96000.0);
     h.tap(0);                                    // round-down -> 1 bar, PLAY
-    CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
     CHECK_EQ(h.engine(),  STATE_PLAY);
     CHECK_EQ(h.loop_length(), 96000);
 
@@ -135,7 +131,6 @@ static void test_bpm_change_in_playback_is_noop()
     // the abort's).
     push_at(h, 140.0, 97000.0);
     h.run(BLK);
-    CHECK_EQ(h.surface(),     SURFACE_PLAYBACK);
     CHECK_EQ(h.engine(),      STATE_PLAY);
     CHECK_EQ(h.loop_length(), 96000);
 }
@@ -149,11 +144,10 @@ static void test_bpm_change_while_overdub_armed_cancels()
     record_blocks(h, BPM, 96);                  // 1 bar at 120
     push_at(h, BPM, 96000.0);
     h.tap(0);                                    // finalize -> PLAYBACK
-    CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
+    CHECK_EQ(h.engine(), STATE_PLAY);
 
     push_at(h, BPM, 96000.0);
     h.pulse_reset();                             // arm overdub
-    CHECK_EQ(h.surface(), SURFACE_OVERDUB);
     CHECK_EQ(h.engine(),  STATE_OVERDUB_ARM);
 
     // Tempo jumps while armed (waiting for the wrap). Cancel the arm.
@@ -163,7 +157,6 @@ static void test_bpm_change_while_overdub_armed_cancels()
     h.run(BLK);
     push_at(h, 140.0, 98000.0);
     h.run(BLK);
-    CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
     CHECK_EQ(h.engine(),  STATE_PLAY);
     CHECK(h.engine() != STATE_OVERDUB_ARM);
 }
@@ -191,7 +184,6 @@ static void test_bpm_change_while_overdub_capturing_aborts()
     // Tempo jumps mid-capture. Pop the layer, preserve cursor.
     push_at(h, 140.0, (double) 193 * BLK);
     h.run(BLK);
-    CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
     CHECK_EQ(h.engine(),  STATE_PLAY);
     CHECK(h.srcloop() == NULL);                 // back to source loop
     // Cursor preserved through undoLoop (fmod(dCurrPos, srcloop->lLoopLength)
@@ -224,7 +216,6 @@ static void test_bpm_change_while_overdub_close_pending_aborts()
     // Tempo jumps while close-pending. Pop the layer.
     push_at(h, 140.0, (double) 217 * BLK);
     h.run(BLK);
-    CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
     CHECK_EQ(h.engine(),  STATE_PLAY);
     CHECK(h.engine() != STATE_OVERDUB_CLOSE);
     CHECK(h.srcloop() == NULL);

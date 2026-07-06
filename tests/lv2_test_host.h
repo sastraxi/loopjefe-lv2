@@ -73,8 +73,8 @@ static LV2_URID test_urid_map(LV2_URID_Map_Handle handle, const char *uri)
 
 /* ---- host ---------------------------------------------------------- */
 
-// A value the engine's state port will never legitimately hold (surface
-// states are 0..4). Writing it forces the "external write" comparison in
+// A value the engine's state port will never legitimately hold (engine
+// states are 0..8). Writing it forces the "external write" comparison in
 // run() to fire, advancing the surface cycle by exactly one step.
 static const int STATE_TAP_SENTINEL = 42;
 
@@ -262,7 +262,7 @@ struct PluginHost {
     }
 
     /* readouts */
-    int  surface() { return plugin()->surface_state; }
+    int  surface() { return plugin()->pLS->state; }
     int  engine()  { return plugin()->pLS->state; }
     bool transport_valid()  { return plugin()->transport_valid; }
     double transport_bpm()  { return plugin()->transport_bpm; }

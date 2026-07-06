@@ -101,7 +101,7 @@ LV2_Handle LoopJefePlugin::instantiate(const LV2_Descriptor* descriptor, double 
    //pLS->lLoopStop = 0;
    //pLS->lCurrPos = 0;
 
-    pLS->state = STATE_PLAY;
+    pLS->state = STATE_EMPTY;
 
     //init lowpass
      plugin->z1 = 0.0;
@@ -115,7 +115,6 @@ LV2_Handle LoopJefePlugin::instantiate(const LV2_Descriptor* descriptor, double 
     plugin->resetSet = false;
     plugin->advanceSet = false;
     plugin->initNewLoop = false;
-    plugin->surface_state = SURFACE_EMPTY;
     plugin->pending_close_length = 0;
 
     return (LV2_Handle)plugin;
@@ -133,7 +132,7 @@ void LoopJefePlugin::activate(LV2_Handle instance)
   pLS->bRampDown = 0;
   pLS->fCurrRate = 1.0;
 
-  pLS->state = STATE_PLAY;
+  pLS->state = STATE_EMPTY;
 
   clearLoopChunks(pLS);
 }

@@ -16,7 +16,7 @@ headers in dependency (DAG) order. The domains:
 
 | File | Owns |
 |---|---|
-| `src/types.h` | `LADSPA_Data`, constants, `STATE_*`/`SURFACE_*` enums, `LoopChunk`, `LoopJefe`, `TimeURIs`, `LoopJefePlugin` class decl |
+| `src/types.h` | `LADSPA_Data`, constants, `STATE_*` enums, `LoopChunk`, `LoopJefe`, `TimeURIs`, `LoopJefePlugin` class decl |
 | `src/transport.h` | `readTimeInfo` + phase-map helpers |
 | `src/memory.h` | `LoopChunk` lifecycle: arena, push/pop/clear/undo/redo, `fillLoops`, `beginOverdub` |
 | `src/stretch.h` | Rubber Band render cache (tempo-follow) |
@@ -108,24 +108,25 @@ over a coincident tap.
 ## Engine internals — gotchas before editing state logic
 
 - **Engine states** (the full set — the DSP switch in `run()` covers
-  exactly these): `STATE_OFF`, `RECORD_ARM`, `RECORD`, `RECORD_CLOSE`,
-  `PLAY`, `OVERDUB`, `OVERDUB_ARM`, `OVERDUB_CLOSE`. 
-- **Symmetric arm/capture/close trios.** Record: `RECORD_ARM`/`RECORD`/
-  `RECORD_CLOSE`. Overdub: `OVERDUB_ARM`/`OVERDUB`/`OVERDUB_CLOSE`. The
+  exactly these): `STATE_EMPTY`, `STATE_RECORD_ARM`, `STATE_RECORD`, `STATE_RECORD_CLOSE`,
+  `STATE_PLAY`, `STATE_STOPPED`, `STATE_OVERDUB_ARM`, `STATE_OVERDUB`, `STATE_OVERDUB_CLOSE`.
+- **Symmetric arm/capture/close trios.** Record: `STATE_RECORD_ARM`/`STATE_RECORD`/
+  `STATE_RECORD_CLOSE`. Overdub: `STATE_OVERDUB_ARM`/`STATE_OVERDUB`/`STATE_OVERDUB_CLOSE`. The
   overdub arm/close states **fall through** to the `STATE_PLAY` / `STATE_OVERDUB`
   audio cases respectively (loop playback / layering), adding only a
   wrap-point check that fires the transition. The record arm/close states
   have their own blocks (dry passthrough / raw capture) because there's no
   existing loop to play. No flags — the engine state is the single source
   of truth.
-- **`surface_state` is the UI-cycle source of truth.** Empty and Stopped
-  both map to engine `STATE_OFF`; only `surface_state` distinguishes them.
+- **The `state` port exposes the engine state directly.** The 9-state engine
+  enum (`STATE_EMPTY` through `STATE_OVERDUB_CLOSE`) is written to the
+  `state` output port every block. There is no separate surface-state layer.
 - **"Stop recording"** (bar-rounding the take) fires in the
-  `SURFACE_RECORDING` case of the advance switch in `runControlPorts()`
+  `STATE_RECORD` case of the advance switch in `runControlPorts()`
   (`state_machine.h`) — not in any `STATE_RECORD_CLOSE` DSP block.
 - **`undo`/`redo`** walk the chunk stack independently of `reset`; both
-  force engine `STATE_PLAY` and snap surface to Playback (or Empty if
-  drained). Handled in `runControlPorts()`.
+  force engine `STATE_PLAY` (or `STATE_EMPTY` if drained).
+  Handled in `runControlPorts()`.
 - **The audience-facing playback cursor is sacred.** Overdub abort/commit
   preserves `dCurrPos` (via `undoLoop` handing it to `srcloop`, or by
   leaving it in place on force-close). Never phase-reset on commit or

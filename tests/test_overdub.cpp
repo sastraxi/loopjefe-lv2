@@ -24,7 +24,7 @@ static void record_freerun_loop(PluginHost &h, int nblocks, float level)
     for (int k = 1; k < nblocks; k++)
         h.run(BLK);
     h.tap(0);                            // finalize -> PLAYBACK
-    CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
+    CHECK_EQ(h.engine(), STATE_PLAY);
     h.set_input(0.0f);
 }
 
@@ -100,7 +100,7 @@ static void test_undo_pops_layer_restores_source()
     float expect_summed = SUM_1PASS;
     for (int k = 0; k * BLK < (long)len; k++)    // run to the wrap -> close
         h.run(BLK);
-    CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
+    CHECK_EQ(h.engine(), STATE_PLAY);
     CHECK(h.srcloop() != NULL);                  // layer is head
 
     float summed = h.loop_sample(2000);

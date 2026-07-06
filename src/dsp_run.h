@@ -229,7 +229,6 @@ void LoopJefePlugin::run(LV2_Handle instance, uint32_t SampleCount)
                                 : 0.0;
                             pLS->lRampSamples = XFADE_SAMPLES;
                             pLS->state = STATE_PLAY;
-                            plugin->surface_state = SURFACE_PLAYBACK;
                             plugin->pending_close_length = 0;
                             break;
                         }
@@ -238,7 +237,6 @@ void LoopJefePlugin::run(LV2_Handle instance, uint32_t SampleCount)
                         if ((char *)(lCurrPos + loop->pLoopStart[0]) >= (pLS->pSampleBuf[0] + pLS->lBufferSize)) {
                             // out of memory: close where we are, no rounding
                             pLS->state = STATE_PLAY;
-                            plugin->surface_state = SURFACE_PLAYBACK;
                             plugin->pending_close_length = 0;
                             loop->dCurrPos = 0.0;
                             loop->recorded_bpm = plugin->capture_bpm_set
@@ -326,7 +324,6 @@ void LoopJefePlugin::run(LV2_Handle instance, uint32_t SampleCount)
                                 // loop continue from the same downbeat.
                                 if (pLS->state == STATE_OVERDUB_CLOSE) {
                                     pLS->state = STATE_PLAY;
-                                    plugin->surface_state = SURFACE_PLAYBACK;
                                     pLS->lRampSamples = XFADE_SAMPLES;
                                 }
                             }
@@ -486,13 +483,11 @@ void LoopJefePlugin::run(LV2_Handle instance, uint32_t SampleCount)
                                 if (pLS->state == STATE_OVERDUB_ARM) {
                                     loop = beginOverdub(pLS, loop);
                                     if (loop) {
-                                        // beginOverdub set state = STATE_OVERDUB;
-                                        // surface_state stays SURFACE_OVERDUB
+                                        // beginOverdub set state = STATE_OVERDUB
                                     } else {
                                         // out of memory: abort the arm,
                                         // go back to plain Playback.
                                         pLS->state = STATE_PLAY;
-                                        plugin->surface_state = SURFACE_PLAYBACK;
                                     }
                                 }
                             }
@@ -540,6 +535,11 @@ passthrough:
 loopend:
         continue;
     }
+
+    // Write the engine state to the output port after the DSP switch so the
+    // port reflects the final state for this block (the DSP switch may have
+    // changed pLS->state, e.g. STATE_RECORD_ARM -> STATE_RECORD on free-run).
+    *(plugin->state) = (float) pLS->state;
 
     // Advance the dry-level one-pole lowpass. The coefficient the DSP switch
     // applied this block was the previous block's settled dryVolumeCoef;

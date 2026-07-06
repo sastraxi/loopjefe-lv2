@@ -46,7 +46,7 @@ static void record_freerun_stereo(PluginHost &h, int nblocks, float l, float r)
     for (int k = 1; k < nblocks; k++)
         h.run(BLK);
     h.tap(0);                            // finalize -> PLAYBACK
-    CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
+    CHECK_EQ(h.engine(), STATE_PLAY);
 }
 
 // --- record: raw capture writes distinct L/R into the right frame slots ---

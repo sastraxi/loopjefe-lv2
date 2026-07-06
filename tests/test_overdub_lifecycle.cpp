@@ -29,7 +29,7 @@ static void record_freerun_loop(PluginHost &h, int nblocks)
     for (int k = 1; k < nblocks; k++)
         h.run(BLK);
     h.tap(0);                            // finalize -> PLAYBACK
-    CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
+    CHECK_EQ(h.engine(), STATE_PLAY);
 }
 
 // reset from Playback arms an overdub: surface flips to OVERDUB, engine stays
@@ -44,7 +44,6 @@ static void test_arm_from_playback_fires_at_wrap()
     CHECK_EQ(h.loop_length(), 96000);
 
     h.pulse_reset();                            // arm overdub
-    CHECK_EQ(h.surface(), SURFACE_OVERDUB);
     CHECK_EQ(h.engine(),  STATE_OVERDUB_ARM);  // armed, falls through to PLAY audio
     CHECK(h.srcloop() == NULL);                 // no layer yet
 
@@ -54,7 +53,6 @@ static void test_arm_from_playback_fires_at_wrap()
         h.run(BLK);
     CHECK_EQ(h.engine(),  STATE_OVERDUB);       // arm fired at the wrap
     CHECK(h.srcloop() != NULL);                 // layer chunk exists, srcloop set
-    CHECK_EQ(h.surface(), SURFACE_OVERDUB);
     CHECK_EQ(h.loop_length(), 96000);           // inherits source length
 }
 
@@ -67,11 +65,9 @@ static void test_advance_during_arm_cancels()
     record_freerun_loop(h, 96);
 
     h.pulse_reset();                            // arm
-    CHECK_EQ(h.surface(), SURFACE_OVERDUB);
     CHECK_EQ(h.engine(),  STATE_OVERDUB_ARM);
 
     h.pulse_advance(0);                         // cancel the arm
-    CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
     CHECK_EQ(h.engine(),  STATE_PLAY);
     CHECK(h.srcloop() == NULL);                 // no layer was created
 }
@@ -93,13 +89,11 @@ static void test_commit_quantizes_to_wrap()
     for (int k = 0; k < 24; k++)
         h.run(BLK);
     h.pulse_advance(0);                         // commit -> close-pending
-    CHECK_EQ(h.surface(), SURFACE_OVERDUB);     // still OVERDUB through the window
     CHECK_EQ(h.engine(),  STATE_OVERDUB_CLOSE);
 
     // Run the remaining 72 blocks to the wrap. At the wrap, close -> Playback.
     for (int k = 0; k < 72; k++)
         h.run(BLK);
-    CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
     CHECK_EQ(h.engine(),  STATE_PLAY);
     CHECK(h.engine() != STATE_OVERDUB_CLOSE);
     CHECK(h.srcloop() != NULL);                 // layer kept
@@ -124,7 +118,6 @@ static void test_force_close_keeps_layer()
 
     double pos_before = h.curr_pos();
     h.pulse_advance(0);                         // force-close now
-    CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
     CHECK_EQ(h.engine(),  STATE_PLAY);
     CHECK(h.srcloop() != NULL);                 // layer kept
     // Cursor stays wherever it was -- no phase reset. (It may have advanced
@@ -151,7 +144,6 @@ static void test_reset_aborts_layer()
     double pos_before_abort = h.curr_pos();
 
     h.pulse_reset(0);                           // abort layer (no audio advance)
-    CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
     CHECK_EQ(h.engine(),  STATE_PLAY);
     // The head chunk is now the source loop again (srcloop NULL -- it's a
     // plain record take, not an overdub layer).
@@ -169,10 +161,9 @@ static void test_reset_during_arm_aborts()
     record_freerun_loop(h, 96);
 
     h.pulse_reset();                            // arm
-    CHECK_EQ(h.surface(), SURFACE_OVERDUB);
+    CHECK_EQ(h.engine(), STATE_OVERDUB_ARM);
 
     h.pulse_reset();                            // abort the arm
-    CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
     CHECK_EQ(h.engine(),  STATE_PLAY);
     CHECK(h.srcloop() == NULL);
 }
@@ -194,7 +185,6 @@ static void test_reset_during_close_pending_aborts()
     CHECK(h.engine() == STATE_OVERDUB_CLOSE);
 
     h.pulse_reset();                            // abort: drop the layer
-    CHECK_EQ(h.surface(), SURFACE_PLAYBACK);
     CHECK_EQ(h.engine(),  STATE_PLAY);
     CHECK(h.engine() != STATE_OVERDUB_CLOSE);
     CHECK(h.srcloop() == NULL);                 // back to the source loop

@@ -227,7 +227,7 @@ the phase cursor — not worth it.
 its true musical length `L_true = rounded_bars · beat_length_samples ·
 beats_per_bar` is almost always *fractional* (e.g. 133.333 BPM, 4/4,
 44100 Hz → 79447.6… samples/bar). Record-close rounds once to the nearest
-sample (`new_length = round(…)`, in `dsp_run.h`'s `SURFACE_RECORDING`
+sample (`new_length = round(…)`, in `dsp_run.h`'s `STATE_RECORD`
 advance case), so the stored length has
 error `e = L_stored − L_true`, `|e| ≤ 0.5 sample`. Playback then free-runs
 its own counter — `dCurrPos += dTempoRate` (in `dsp_run.h`'s `STATE_PLAY`

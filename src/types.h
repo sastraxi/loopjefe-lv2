@@ -76,25 +76,15 @@ typedef float LADSPA_Data;
 
 /*****************************************************************************/
 
-#define STATE_OFF           0
-#define STATE_RECORD_ARM   1   // record arm, waiting for downbeat
-#define STATE_RECORD        2
-#define STATE_RECORD_CLOSE 3   // record close-pending, capturing tail
-#define STATE_PLAY         4
-#define STATE_OVERDUB       5
-#define STATE_OVERDUB_ARM  6   // overdub arm, waiting for loop wrap (falls through to PLAY audio)
-#define STATE_OVERDUB_CLOSE 7  // overdub close-pending, capturing to wrap (falls through to OVERDUB audio)
-
-// Externally-visible values for the `state` control port -- a 5-value
-// wrapper cycle implementing the single-footswitch UX described in
-// docs/multitrack-looper-plan.md (pi-Stomp repo). Distinct from the
-// engine's internal EngineState::state (STATE_* above), which the
-// wrapper drives underneath.
-#define SURFACE_EMPTY     0
-#define SURFACE_RECORDING 1
-#define SURFACE_OVERDUB   2
-#define SURFACE_PLAYBACK  3
-#define SURFACE_STOPPED   4
+#define STATE_EMPTY           0
+#define STATE_RECORD_ARM      1   // record arm, waiting for downbeat
+#define STATE_RECORD          2
+#define STATE_RECORD_CLOSE    3   // record close-pending, capturing tail
+#define STATE_PLAY            4
+#define STATE_STOPPED         5
+#define STATE_OVERDUB_ARM     6   // overdub arm, waiting for loop wrap (falls through to PLAY audio)
+#define STATE_OVERDUB         7
+#define STATE_OVERDUB_CLOSE   8   // overdub close-pending, capturing to wrap (falls through to OVERDUB audio)
 
 #define LIMIT_BETWEEN_0_AND_1(x)          \
 (((x) < 0) ? 0 : (((x) > 1) ? 1 : (x)))
@@ -292,9 +282,6 @@ public:
     bool redoSet;
     bool resetSet;
     bool initNewLoop;
-    int surface_state;       // SURFACE_* -- the value we last advanced to
-                              // (written out to `state` every block as the
-                              // read-only LED/UI feedback port).
     bool advanceSet;          // edge-tracking for the momentary `advance` port,
                               // mirroring resetSet/undoSet/redoSet.
 

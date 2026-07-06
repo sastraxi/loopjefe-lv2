@@ -8,7 +8,7 @@
     </div>
 
     <div class="lj-hub-wrap">
-        <div class="lj-hub" mod-role="input-control-port" mod-widget="custom-select" mod-port-symbol="state">
+        <div class="lj-hub" mod-role="output-control-port" mod-widget="custom-select" mod-port-symbol="state">
             <svg class="lj-hub-svg" viewBox="0 0 150 150" width="150" height="150">
                 <circle class="lj-ring-bg" cx="75" cy="75" r="65"/>
                 <circle class="lj-ring-fg" cx="75" cy="75" r="65"/>
@@ -73,14 +73,7 @@
 </div>
 <script type="text/javascript">
 setTimeout(function () {
-    var STATES = ["empty", "recording", "overdub", "playback", "stopped"];
-    // Mirrors the plugin's surface_state advance table (src/shared.h,
-    // switch (plugin->surface_state) in run()): 4-state cycle, Overdub
-    // is skipped. Empty is only reachable via the reset port. The
-    // Overdub index (2) is still in STATES for the safety-net case in
-    // the engine (where anything ever lands on SURFACE_OVERDUB, the
-    // next tap takes the user back to Playback).
-    var NEXT_STATE = { 0: 1, 1: 3, 3: 4, 4: 3 };
+    var STATES = ["empty", "record_arm", "recording", "record_close", "playback", "stopped", "overdub_arm", "overdub", "overdub_close"];
 
     $(".lj-hub").each(function () {
         var hub = $(this);
@@ -101,15 +94,11 @@ setTimeout(function () {
         });
 
         hub.on("click", function () {
-            var options = hub.find("[mod-role=enumeration-option]");
-            var selected = hub.find("[mod-role=enumeration-option].selected");
-            var idx = options.index(selected);
-            var nextIdx = NEXT_STATE[idx];
-            if (nextIdx === undefined) {
-                return;
+            // Fire the advance trigger port
+            var adv = hub.closest(".mod-pedal").find("[mod-port-symbol=advance]");
+            if (adv.length) {
+                adv.trigger("change");
             }
-            var nextValue = options.eq(nextIdx).attr("mod-port-value");
-            hub.customSelect("setValue", nextValue, false);
         });
     });
 }, 0);

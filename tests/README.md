@@ -60,18 +60,17 @@ h.pulse_reset();                    // fire the momentary reset port + a block
 h.set_transport(120, 4, 0, true);   // bpm, beats/bar, barBeat, rolling
 h.clear_transport();                // valid-but-empty sequence
 
-h.surface();  h.engine();           // SURFACE_* / STATE_* readouts
+h.engine();           // STATE_* readout (engine state = port state)
 h.transport_valid();  h.transport_bpm();
 h.loop_length();                    // headLoopChunk->lLoopLength
 ```
 
 Two mechanics worth knowing:
 
-- **`tap()` uses a sentinel.** The engine advances the surface cycle
-  whenever the `state` port differs from the value it last wrote. `tap()`
-  writes `STATE_TAP_SENTINEL` (42, outside the 0–4 surface range) so it
-  always registers as an external change — exactly one step per call. Plain
-  `run()` leaves the port untouched, so it never taps.
+- **`tap()` fires the `advance` trigger.** `pulse_advance()` sets the
+  `advance` port to 1.0, runs one block, and clears the edge latch so the
+  next call fires cleanly. The engine self-clears the port inside `run()`.
+  Plain `run()` leaves the port untouched, so it never advances.
 - **Free-run vs. transport.** With no `time:Position` pushed, record-arm
   falls back to free-run and starts recording *within the same `run()`* —
   so `STATE_RECORD_ARM` is never observable across a block boundary. To
@@ -99,7 +98,7 @@ Drop a new `test_<thing>.cpp` in this dir following the pattern:
 static void test_something() {
     PluginHost h;
     h.tap();
-    CHECK_EQ(h.surface(), SURFACE_RECORDING);
+    CHECK_EQ(h.engine(), STATE_RECORD);
 }
 
 int main() {
