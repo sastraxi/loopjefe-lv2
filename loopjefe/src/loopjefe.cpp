@@ -34,7 +34,7 @@
 
 #define PLUGIN_URI "http://treefallsound.com/plugins/loopjefe"
 
-enum {IN_0, OUT_0, STATE, ADVANCE, RESET, UNDO, REDO, DRY_LEVEL, TIME_INFO, PLUGIN_PORT_COUNT};
+enum {IN_0, OUT_0, STATE, MEASURE_NUMBER, ADVANCE, RESET, UNDO, REDO, DRY_LEVEL, TIME_INFO, PLUGIN_PORT_COUNT};
 
 #define NUM_CHANNELS 1
 #define PLUGIN_AUDIO_PORT_COUNT     2
@@ -59,6 +59,9 @@ void LoopJefePlugin::connect_port(LV2_Handle instance, uint32_t port, void *data
         break;
     case STATE:
         plugin->state = (float*) data;
+        break;
+    case MEASURE_NUMBER:
+        plugin->measure_number = (float*) data;
         break;
     case ADVANCE:
         plugin->advance = (float*) data;

@@ -552,6 +552,31 @@ loopend:
     // changed pLS->state, e.g. STATE_RECORD_ARM -> STATE_RECORD on free-run).
     *(plugin->state) = (float) pLS->state;
 
+    // Write the current measure number (within the head loop) to the
+    // measure_number output port. 0 = the loop's own downbeat/first measure.
+    // Read-only: same contract as `state` -- never read by the engine, just
+    // pushed to the host. Consumers (footswitch LEDs, MOD UI) use this to
+    // pulse on the downbeat without depending on the host's bar grid.
+    //
+    // Only meaningful when the head loop was recorded against a valid
+    // transport (loop_beats > 0). In every other case -- no loop yet, a
+    // free-run take, or no transport seen -- output 0 so a consumer that
+    // mistakes this for "beat 0" still gets a stable, non-pulsing value.
+    {
+        LoopChunk *ml = pLS->headLoopChunk;
+        if (ml && ml->lLoopLength > 0 && ml->loop_beats > 0.0
+                && plugin->transport_valid && plugin->transport_beats_per_bar > 0.0) {
+            double abs_beats = phaseMapAbsBeats(plugin->transport_bar,
+                plugin->transport_beats_per_bar, plugin->transport_bar_beat);
+            double phase01 = phaseMapPhase01(abs_beats, ml->anchor_beat, ml->loop_beats);
+            int measure = (int) floor((phase01 * ml->loop_beats) / plugin->transport_beats_per_bar);
+            if (measure < 0) measure = 0;
+            *(plugin->measure_number) = (float) measure;
+        } else {
+            *(plugin->measure_number) = 0.0f;
+        }
+    }
+
     // Advance the dry-level one-pole lowpass. The coefficient the DSP switch
     // applied this block was the previous block's settled dryVolumeCoef;
     // stepping it here per-sample smooths dry-level changes toward volumeCoef.

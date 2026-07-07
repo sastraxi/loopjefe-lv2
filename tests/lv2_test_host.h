@@ -89,9 +89,11 @@ struct PluginHost {
     uint32_t max_block;
 
     // control ports (single floats). `state` is now a read-only output;
-    // `advance` is the momentary one-step trigger (rising edge = one
-    // surface-cycle step, self-clears, mirroring reset).
-    float state = 0, advance = 0, reset = 0, undo = 0, redo = 0, dry_level = 1.0f;
+    // `measure_number` is the new read-only output (current measure within
+    // the head loop, 0 = loop's own downbeat). `advance` is the momentary
+    // one-step trigger (rising edge = one surface-cycle step, self-clears,
+    // mirroring reset).
+    float state = 0, measure_number = 0, advance = 0, reset = 0, undo = 0, redo = 0, dry_level = 1.0f;
     // audio ports
     std::vector<float> in, out;
 #if NUM_CHANNELS > 1
@@ -154,6 +156,7 @@ struct PluginHost {
         LoopJefePlugin::connect_port(handle, OUT_1,    out_1.data());
 #endif
         LoopJefePlugin::connect_port(handle, STATE,    &state);
+        LoopJefePlugin::connect_port(handle, MEASURE_NUMBER, &measure_number);
         LoopJefePlugin::connect_port(handle, ADVANCE,  &advance);
         LoopJefePlugin::connect_port(handle, RESET,    &reset);
         LoopJefePlugin::connect_port(handle, UNDO,     &undo);
@@ -263,6 +266,7 @@ struct PluginHost {
     /* readouts */
     int  surface() { return plugin()->pLS->state; }
     int  engine()  { return plugin()->pLS->state; }
+    int  measure() { return (int) measure_number; }
     bool transport_valid()  { return plugin()->transport_valid; }
     double transport_bpm()  { return plugin()->transport_bpm; }
     unsigned long loop_length()

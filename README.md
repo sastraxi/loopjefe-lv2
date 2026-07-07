@@ -21,7 +21,8 @@ recording design.
 
 | Port | Direction | Type | Purpose |
 |---|---|---|---|
-| `state` | output | integer/enumeration (Empty=0 Recording=1 Overdub=2 Playback=3 Stopped=4) | Read-only feedback for footswitch LED / MOD UI display |
+| `state` | output (read-only, monitored) | integer/enumeration (Empty=0 Record Arm=1 Recording=2 Record Close=3 Playback=4 Stopped=5 Overdub Arm=6 Overdub=7 Overdub Close=8) | Read-only feedback for footswitch LED / MOD UI display. mod-host auto-monitors this port and emits `output_set` whenever the engine state changes. |
+| `measure_number` | output (read-only, monitored) | integer (0 = the loop's own downbeat / first measure) | Current measure index *within the head loop*, derived from the loop's phase-anchor math against the live `time:Position` transport. 0 whenever no head loop exists or the take was free-run. mod-host auto-monitors this port so a footswitch LED / MOD UI can pulse on the downbeat without depending on the host's bar grid. See pi-Stomp `docs/plan-footswitch-behaviour.md`. |
 | `advance` | input | lv2:toggled, pprops:trigger (momentary, edge-triggered) | One rising edge = one surface-cycle step |
 | `reset` | input | lv2:toggled, pprops:trigger (momentary, edge-triggered) | Mode-aware abort/delete (see `docs/state-machine-redesign.md` §4.1) |
 | `undo` / `redo` | input | lv2:toggled, pprops:trigger | Walk the chunk stack |

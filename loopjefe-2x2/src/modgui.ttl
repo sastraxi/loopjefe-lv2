@@ -13,4 +13,9 @@
       lv2:symbol "state";
       lv2:name "State";
     ];
+    modgui:monitoredOutputs [
+      lv2:symbol "state";
+    ] , [
+      lv2:symbol "measure_number";
+    ];
   ].

@@ -246,6 +246,7 @@ public:
     float *out_1;
 #endif
     float *state;
+    float *measure_number;
     float *advance;
     float *reset;
     float *undo;
